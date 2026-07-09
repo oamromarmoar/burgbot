@@ -1,251 +1,143 @@
-# Discord Referral + Ticket Role-Removal Bot
+# BurgBot 🍔
 
-A single `discord.py` bot with two independent features:
+A multi-purpose `discord.py` bot. Originally a referral-tracker + ticket
+role-remover; now also does moderation, welcome messages, reminders, polls,
+and server info — every command available both as a native `/` slash command
+(with Discord's autocomplete picker) and as a classic `!` prefix command.
 
-1. **Referral tracking** — attributes new-member joins to the invite link
-   they used, counts referrals per member, and grants a role once a
-   configurable threshold is reached. Tracks two numbers per referrer:
-   progress toward their *next* reward (resets to 0 once the role is
-   removed) and a lifetime total (never resets).
-2. **Ticket role removal** — when a "Chef" replies in a ticket channel,
-   schedules removal of the referral role from the ticket opener after a
-   configurable delay, and resets that member's progress toward their next
-   reward. Survives bot restarts.
+| Feature | What it does |
+|---|---|
+| **Referrals** | Attributes joins to the invite used, counts per referrer, grants a role at a threshold. Progress bar, paginated leaderboard, `/who_invited` lookups. |
+| **Anti-abuse** | One credit per account *ever*, retention window before credit finalizes (leaving early voids it), young accounts flagged into an interactive approve/deny review queue. |
+| **Tickets** | When a **Chef** replies in a ticket channel, schedules removal of the referral role from the ticket opener (restart-safe). Inspect with `/ticket_info`, manage with `/pending_removals` and `/cancel_removal`. |
+| **Welcome** | Configurable welcome/goodbye messages with `{mention} {name} {server} {count}` placeholders. |
+| **Moderation** | `/purge`, `/kick`, `/ban`, `/unban`, `/timeout`, `/untimeout`, `/slowmode`, persisted warnings (`/warn`, `/warnings`, `/unwarn`). Hierarchy-checked, DM'd to the target, logged. |
+| **Utility** | Interactive `/help`, `/ping`, `/botinfo`, `/serverinfo`, `/userinfo`, `/avatar`, restart-safe `/remind` + `/reminders`, `/invites` stats. |
+| **Fun** | Button polls that survive restarts (`/poll`), `/roll`, `/coinflip`, `/8ball`, `/choose`. |
+| **Setup UX** | 4-step dropdown wizard (`/setup`), per-guild config with instant effect, persistent "Start Setup" button on join, `/settings` overview, activity-log channel feed. |
+
+## Project layout
+
+```
+bot.py       entrypoint (python bot.py)
+config.py    env-var defaults + per-guild config schema + extension list
+storage.py   atomic JSON persistence (data/*.json)
+ui.py        shared embeds, progress bars, duration parsing, paginator
+core.py      BurgBot class: state, gateway events, business logic, timers
+cogs/        commands + interactive UI: referrals, tickets, welcome,
+             moderation, utility, fun, admin
+```
+
+To drop a whole feature area, remove its line from `EXTENSIONS` in
+`config.py`.
 
 ## Setup
 
-### 1. Install dependencies
+### 1. Install
 
 ```
 pip install -r requirements.txt
-```
-
-### 2. Developer Portal configuration
-
-In the [Discord Developer Portal](https://discord.com/developers/applications),
-under your application -> **Bot**:
-
-- Enable **Server Members Intent** (privileged) — required for `on_member_join`
-  and for resolving members/roles reliably.
-- Enable **Message Content Intent** (privileged) — required by the intents
-  requested in code (`intents.message_content = True`).
-- The **invites** intent (`intents.invites`) is *not* privileged and needs no
-  toggle in the portal.
-
-### 3. Bot permissions
-
-When generating the OAuth2 invite URL, grant at least:
-
-- **Manage Roles** — to add/remove the referral role.
-- **Manage Server** — required to call `guild.invites()` and see invite use
-  counts.
-- **View Channels** / **Read Message History** in whatever channels/categories
-  contain tickets.
-
-**Important:** the bot's own top role must be positioned **above** the
-referral role in Server Settings -> Roles, or role add/remove calls will
-raise `discord.Forbidden` regardless of the Manage Roles permission.
-
-### 4. Configure
-
-There are two layers of configuration:
-
-1. **Env vars** (`.env` / `DISCORD_TOKEN` etc.) — set the *default* values
-   used until a server configures itself, and always hold `DISCORD_TOKEN`,
-   `BOT_DATA_DIR`, and `COMMAND_PREFIX` (these three aren't per-guild).
-2. **The setup wizard** (see below) — lets each server's admins configure
-   everything else (roles, ticket detection, thresholds, timing) through
-   Discord's UI instead of editing env vars. Per-guild settings are stored in
-   `data/guild_config.json` and override the env-var defaults for that guild
-   only, immediately, with no restart.
-
-Copy `.env.example` to `.env` (or otherwise export the same variables) and
-fill in at least the token:
-
-```
-cp .env.example .env
-```
-
-| Variable | Meaning |
-|---|---|
-| `DISCORD_TOKEN` | Bot token (required, no default). |
-| `REFERRAL_ROLE_ID` | Default: role granted after enough referrals, and removed after a handled ticket. |
-| `REFERRALS_NEEDED` | Default: referral count required to grant the role. |
-| `MIN_ACCOUNT_AGE_SECONDS` | Default: below this Discord account age, a join is queued for manual review instead of auto-credited (259200 = 3 days). |
-| `MIN_MEMBER_RETENTION_SECONDS` | Default: a credited join is held this long before it counts; leaving early voids it (86400 = 24h). |
-| `SUSPICIOUS_LOG_CHANNEL_ID` | Default: optional channel to post suspicious-join alerts to (0 = disabled, still visible via `!suspicious_joins`). |
-| `CHEF_ROLE_ID` | Default: role that triggers scheduled removal when its holder posts in a ticket. |
-| `TICKET_DETECTION_MODE` | Default: `prefix`, `category`, or `and` (requires both configured criteria to match — falls back to whichever single one is set if only one is configured). |
-| `TICKET_CHANNEL_PREFIX` | Default: ticket channel name prefix, e.g. `ticket-`. |
-| `TICKET_CATEGORY_ID` | Default: category ID tickets live under. |
-| `ROLE_REMOVAL_DELAY_SECONDS` | Default: delay before removal after a Chef message (1200 = 20 min). |
-| `BOT_DATA_DIR` | Where all JSON data files live (default `./data`). Not per-guild. |
-| `COMMAND_PREFIX` | Command prefix (default `!`). Not per-guild. |
-
-### 5. Setup wizard (per-server, admins only)
-
-When the bot joins a server, it posts a "Start Setup" prompt in the system
-channel (or the first channel it can post in). Any time after that, an admin
-can also run `!setup` to (re)configure. Both are gated to members with the
-**Administrator** permission — non-admins get a rejection message if they
-try to use the command or click the wizard's buttons/dropdowns.
-
-The wizard is a 3-step flow using Discord's native pickers:
-
-1. **Referral role**, **Chef role** (role dropdowns), **ticket category**
-   (channel dropdown), and ticket name prefix (via a button that opens a
-   short text-input modal).
-2. **Referrals needed**, **role removal delay**, **minimum account age**,
-   **minimum member retention** — all preset dropdowns, no typing required.
-3. **Suspicious-join log channel** (optional), then **Save Configuration**.
-
-Changes take effect immediately on save — no restart needed. If the bot
-restarts before an admin clicks the on-join "Start Setup" button, that
-specific button stops working (Discord interactions on old messages don't
-survive a process restart unless a bot re-registers persistent views, which
-this one doesn't) — `!setup` is unaffected and always works as the reliable
-way to configure or reconfigure a server.
-
-If you'd rather use a `.env` file with `python-dotenv`, add
-`from dotenv import load_dotenv; load_dotenv()` at the top of `bot.py` and
-`pip install python-dotenv` — omitted here to keep the dependency list
-minimal.
-
-### 5. Run
-
-```
+cp .env.example .env   # then put your token in it
 python bot.py
 ```
 
+### 2. Developer Portal
+
+Under your application → **Bot**, enable the privileged intents:
+
+- **Server Members Intent** — joins/leaves, roles, welcome messages.
+- **Message Content Intent** — `!` prefix commands.
+
+### 3. Invite URL & permissions
+
+Use **both** the `bot` and `applications.commands` OAuth2 scopes. Grant at
+least: **Manage Roles** (referral role), **Manage Server** (read invites),
+**View Channels / Read Message History** where tickets live, plus whatever
+moderation permissions you want it to actually use (Kick/Ban/Moderate
+Members/Manage Messages/Manage Channels).
+
+**Important:** the bot's own top role must sit **above** the referral role
+in Server Settings → Roles, or role changes raise `discord.Forbidden`.
+
+### 4. Configure — `/setup` (admins only)
+
+Env vars (see `.env.example`) only provide *defaults*; the wizard is the real
+configuration surface. When the bot joins a server it posts a **Start Setup**
+button (persistent across restarts); admins can also run `/setup` any time:
+
+1. **Roles & tickets** — referral role, Chef role, ticket category, name prefix.
+2. **Thresholds & timing** — referrals needed, removal delay, min account age, retention window.
+3. **Logging** — suspicious-join alert channel, activity-log channel.
+4. **Welcome** — welcome/goodbye channels and message templates.
+
+Saved per guild in `data/guild_config.json`; takes effect immediately.
+`/settings` shows the current effective config.
+
 ## Commands
 
-- `!setup` — (re)configure this server via the dropdown wizard. Requires
-  Administrator.
-- `!referrals_count [member]` — reports a member's referral total (defaults
-  to yourself).
-- `!set_ticket_opener <channel> <member>` — manually records who opened a
-  ticket, for cases the automatic detection can't figure out. Requires
-  Manage Roles.
-- `!suspicious_joins` — lists joins flagged for account age, awaiting review.
-  Requires Manage Roles.
-- `!approve_referral <member>` — manually credits a flagged join (staff
-  confirmed it's legitimate). Requires Manage Roles.
-- `!deny_referral <member>` — discards a flagged join without crediting
-  anyone. Requires Manage Roles.
+Run `/help` in Discord for the interactive, always-up-to-date version.
 
-## Anti-abuse (leave/rejoin farming and alt-account self-referrals)
+- **Referrals:** `referrals [member]`, `leaderboard`, `who_invited <member>`,
+  `suspicious_joins` (approve/deny buttons), `approve_referral`,
+  `deny_referral`, `add_referral`, `remove_referral`
+- **Tickets:** `ticket_info [channel]`, `set_ticket_opener`,
+  `pending_removals`, `cancel_removal`
+- **Welcome:** `test_welcome`
+- **Moderation:** `purge`, `kick`, `ban`, `unban`, `timeout`, `untimeout`,
+  `slowmode`, `warn`, `warnings`, `unwarn`
+- **Utility:** `help`, `ping`, `botinfo`, `serverinfo`, `userinfo`, `avatar`,
+  `remind`, `reminders`, `invites`
+- **Fun:** `poll`, `roll`, `coinflip`, `8ball`, `choose`
+- **Admin:** `setup`, `settings`, and prefix-only `!sync` (application owner;
+  forces a slash-command re-sync — the tree normally syncs itself on startup
+  and skips the API call entirely when commands haven't changed)
 
-Referral counting is deliberately **not** immediate — every credited join
-goes through two gates before it's permanent:
+Staff commands set `default_member_permissions`, so Discord hides them from
+the `/` picker for members who lack the permission — a client-side hint on
+top of the server-side checks that actually enforce access.
 
-1. **One credit per Discord account, ever.** `credited_members.json` records
-   every member ID that has ever been credited, to whoever referred them.
-   Once present, that account can never generate another credit — not by
-   leaving and rejoining on the same invite, not by rejoining on a different
-   referrer's invite. This alone defeats simple leave/rejoin farming.
+## Anti-abuse model (summary)
 
-2. **Retention window before a credit finalizes.** A qualifying join is
-   written to `pending_credits.json` and only turned into an actual credit
-   after `MIN_MEMBER_RETENTION_SECONDS` (default 24h) — and only if the
-   member is still in the guild at that point. `on_member_remove` cancels
-   the pending credit the moment the member leaves early. This is what
-   defeats "join a batch of alts, get instant credit, immediately leave" —
-   each alt now has to occupy a seat in the server for the full window,
-   which is far more visible and costly for an abuser than a drive-by join.
+1. **One credit per Discord account, ever** (`credited_members.json`) —
+   defeats leave/rejoin farming.
+2. **Retention window** — a credit only finalizes after
+   `min_member_retention_seconds` if the member is still present; leaving
+   early voids it.
+3. **Account-age gate** — accounts younger than `min_account_age_seconds`
+   go to the `/suspicious_joins` review queue instead of auto-crediting,
+   because a bot can't distinguish "new to Discord" from "farmed alt";
+   a human decides.
 
-3. **Account-age gate for likely alts.** If the joining account is younger
-   than `MIN_ACCOUNT_AGE_SECONDS` (default 3 days), it's never
-   auto-credited — it's written to `suspicious_joins.json` for staff to
-   review with `!suspicious_joins` / `!approve_referral` / `!deny_referral`.
-   Joins aren't silently rejected here because a brand-new Discord account is
-   also just... a new Discord user; a bot can't tell the difference between
-   that and a farmed alt, so this defers the judgment call to a human instead
-   of guessing wrong in either direction.
+A determined multi-accounter with aged accounts can still get through — a
+bot has no IPs/fingerprints/payment signals. Raise the server's Verification
+Level (Discord-side) and consider a phone/captcha verification bot if that
+becomes a real problem.
 
-### Hard limit: this cannot fully stop determined multi-accounting
+## Ticket-opener detection (summary)
 
-A bot has no access to IP addresses, device fingerprints, or payment info, so
-there's no way to prove two Discord accounts belong to the same person.
-Someone willing to age accounts for a few days, keep them in the server for
-24h, and use different invites can still get through. To raise the bar
-further:
+Tried most- to least-reliable: stored mapping (`/set_ticket_opener` or
+auto-captured at channel creation) → per-member permission overwrite (how
+Ticket Tool scopes a channel to its opener) → `<@id>` mention in the channel
+topic → single referral-role holder present in the channel. Ambiguous cases
+bail out rather than guess; `/ticket_info` shows what the bot concluded.
 
-- **Raise the server's Verification Level** (Server Settings -> Safety
-  Setup -> Verification Level) to at least **Medium** (registered on Discord
-  >5 min) or **High** (member of *some* server >10 min) — this is a
-  Discord-side setting, not something this bot configures, and stacks with
-  the account-age gate above.
-- Consider a dedicated verification bot (phone/captcha-based) for new
-  members if self-referral abuse becomes a real problem — that's the class
-  of signal (phone number, payment method) that can actually link accounts,
-  and is out of scope for what a bot without those integrations can do.
-- If needed, add a per-referrer daily/weekly cap on auto-credits as a
-  circuit breaker (not implemented here, but a small addition to
-  `_attribute_join` if bulk alt farming becomes a pattern you're seeing).
+## Persistence
 
-## How ticket-opener detection works (and its tradeoffs)
-
-The bot doesn't control the separate ticket bot, so it can't know the opener
-with certainty. It tries, in order:
-
-1. **Stored mapping** (`ticket_openers.json`) — most reliable, and normally
-   already populated by the time it's needed, because `on_guild_channel_create`
-   fills it in via method 2 the moment the ticket channel appears. Can also be
-   set manually via `!set_ticket_opener`.
-2. **Per-member permission overwrites** — the only way Discord lets a bot
-   scope a channel to one specific non-role-based user is a per-member
-   permission overwrite, and that's exactly how Ticket Tool (and effectively
-   every other ticket bot) grants the opener access to their private channel.
-   Reading that overwrite identifies who the channel was created for,
-   independent of what roles they currently hold — unlike method 4 below, this
-   can't be fooled by an unrelated referral-role holder who happens to have
-   channel access. Tradeoff: if the ticket bot grants *specific staff members*
-   individual overwrites too (rather than via a role), there's no way to tell
-   them apart from the opener, so this bails out rather than guess if more
-   than one non-staff member has a personal overwrite.
-3. **Channel topic** — looks for a `<@user_id>` mention in the topic, in case
-   the ticket bot is configured to include one. Fragile: entirely dependent
-   on that specific bot/config, and fails silently if absent.
-4. **Last-resort fallback** — looks for a member present in the channel who
-   holds `REFERRAL_ROLE_ID`, and only acts if exactly one such member is
-   found. This is the weakest signal: it assumes the opener is the only
-   referral-role holder with access to the channel; if staff also hold that
-   role, or a past referrer can still see the channel, this either picks the
-   wrong person or (safely) gives up rather than guess. Only reached if
-   methods 1-3 all come up empty.
+JSON under `BOT_DATA_DIR` (default `./data/`), written atomically:
+`referral_progress`, `total_referrals` (both `{guild_id: {user_id: count}}`;
+old flat single-guild files are auto-migrated on startup),
+`credited_members`, `pending_credits`, `suspicious_joins`, `ticket_openers`,
+`pending_removals`, `guild_config`, `warnings`, `reminders`, `polls`,
+`synced_commands` (sync-skip cache). Pending credits, removals, reminders,
+and poll timers/buttons are all re-armed on startup, so restarts don't drop
+scheduled work.
 
 ## Known limitations
 
-- **Invite attribution is best-effort.** Vanity URLs never appear in
-  `guild.invites()` and have no use counter, so joins via a vanity URL can't
-  be attributed to anyone. Simultaneous invite uses (two people joining via
-  different invites in the same instant, or a race between the join event and
-  the invite-count update) can also make attribution ambiguous; the bot skips
-  crediting rather than guessing when it can't find a unique invite whose use
-  count increased.
-- **Ticket opener detection is heuristic**, as described above — it is not a
-  substitute for the ticket bot exposing this data directly (e.g. via a
-  webhook or shared database), if that's an option.
-- Both `discord.Forbidden` and `discord.HTTPException` are caught around all
-  invite fetches and role edits and logged, but the underlying action (grant,
-  attribute, or remove) is simply skipped when they occur — it is not
-  retried automatically.
-
-## Persistence model
-
-JSON files under `BOT_DATA_DIR` (default `./data/`):
-
-- `referral_progress.json` — `{ "<user_id>": <count> }` — progress toward the next reward; reset to 0 when the referral role is removed.
-- `total_referrals.json` — `{ "<user_id>": <count> }` — lifetime total, never reset.
-- `ticket_openers.json` — `{ "<channel_id>": "<user_id>" }`
-- `pending_removals.json` — `{ "<channel_id>:<user_id>": { "guild_id", "channel_id", "member_id", "remove_at" } }`
-- `credited_members.json` — `{ "<member_id>": "<referrer_id>" }` — permanent, never re-credited once present.
-- `pending_credits.json` — `{ "<member_id>": { "guild_id", "member_id", "referrer_id", "credit_at" } }`
-- `suspicious_joins.json` — `{ "<member_id>": { "guild_id", "member_id", "referrer_id", "account_age_seconds", "flagged_at" } }`
-- `guild_config.json` — `{ "<guild_id>": { ...whatever fields that guild's admins have set via !setup... } }`. Anything not present here falls back to the env-var default for that field (see `DEFAULT_GUILD_CONFIG` / `get_guild_config()` in `bot.py`).
-
-`pending_removals.json` is the important one for restart-safety: every
-scheduled removal is written to disk immediately when scheduled, and removed
-once it fires. On startup, `setup_hook()` re-reads this file and re-arms an
-`asyncio` task for each entry with whatever time remains (or fires it
-immediately if the delay already elapsed while the bot was offline).
+- **Invite attribution is best-effort:** vanity URLs never appear in
+  `guild.invites()`, and two simultaneous joins via different invites can be
+  ambiguous — the bot skips crediting rather than guessing.
+- **Ticket-opener detection is heuristic** (see above) — not a substitute
+  for the ticket bot exposing opener data directly, if yours can.
+- Failed Discord API calls (role edits, invite fetches) are logged and
+  skipped, not retried.
