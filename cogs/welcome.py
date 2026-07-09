@@ -8,6 +8,7 @@ import logging
 from typing import TYPE_CHECKING
 
 import discord
+from discord import app_commands
 from discord.ext import commands
 
 from ui import COLOR_OK, COLOR_WARN, info_embed
@@ -64,6 +65,7 @@ class Welcome(commands.Cog):
     @commands.hybrid_command(
         name="test_welcome", description="Preview this server's welcome and goodbye messages, using you as the member."
     )
+    @app_commands.default_permissions(administrator=True)
     @commands.has_permissions(administrator=True)
     @commands.guild_only()
     async def test_welcome(self, ctx: commands.Context):
