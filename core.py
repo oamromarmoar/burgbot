@@ -646,19 +646,41 @@ class BurgBot(commands.Bot):
         return None
 
     async def on_guild_channel_create(self, channel: discord.abc.GuildChannel):
+        if not isinstance(channel, discord.TextChannel) or not self.is_ticket_channel(channel):
+            return
+
         # Populate the opener map the moment a ticket channel appears --
         # Ticket Tool sets the per-member overwrite atomically at creation.
-        if isinstance(channel, discord.TextChannel) and self.is_ticket_channel(channel):
-            inferred = self._infer_opener_from_overwrites(channel)
-            if inferred:
-                self.ticket_openers[str(channel.id)] = str(inferred.id)
+        inferred = self._infer_opener_from_overwrites(channel)
+        if inferred:
+            self.ticket_openers[str(channel.id)] = str(inferred.id)
+            self.save_ticket_openers()
+        elif channel.topic:
+            match = self._TOPIC_OPENER_RE.search(channel.topic)
+            if match:
+                self.ticket_openers[str(channel.id)] = match.group("id")
                 self.save_ticket_openers()
-                return
-            if channel.topic:
-                match = self._TOPIC_OPENER_RE.search(channel.topic)
-                if match:
-                    self.ticket_openers[str(channel.id)] = match.group("id")
-                    self.save_ticket_openers()
+
+        await self._notify_chef_of_new_ticket(channel)
+
+    async def _notify_chef_of_new_ticket(self, channel: discord.TextChannel):
+        chef_role_id = self.get_guild_config(channel.guild.id)["chef_role_id"]
+        if not chef_role_id:
+            return
+        role = channel.guild.get_role(chef_role_id)
+        if role is None:
+            log.warning(
+                "chef_role_id %s not found in guild %s; cannot notify of new ticket %s.",
+                chef_role_id, channel.guild.id, channel.id,
+            )
+            return
+        try:
+            await channel.send(
+                f"{role.mention} a new ticket has been opened.",
+                allowed_mentions=discord.AllowedMentions(roles=[role]),
+            )
+        except (discord.Forbidden, discord.HTTPException) as exc:
+            log.warning("Failed to notify Chef role in new ticket channel %s: %s", channel.id, exc)
 
     async def on_message(self, message: discord.Message):
         await self.process_commands(message)
