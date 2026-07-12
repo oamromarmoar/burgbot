@@ -646,8 +646,15 @@ class BurgBot(commands.Bot):
         return None
 
     async def on_guild_channel_create(self, channel: discord.abc.GuildChannel):
-        if not isinstance(channel, discord.TextChannel) or not self.is_ticket_channel(channel):
+        if not isinstance(channel, discord.TextChannel):
             return
+        if not self.is_ticket_channel(channel):
+            log.info(
+                "New text channel #%s (%s) in guild %s did not match ticket detection; ignoring.",
+                channel.name, channel.id, channel.guild.id,
+            )
+            return
+        log.info("Detected new ticket channel #%s (%s) in guild %s.", channel.name, channel.id, channel.guild.id)
 
         # Populate the opener map the moment a ticket channel appears --
         # Ticket Tool sets the per-member overwrite atomically at creation.
@@ -667,6 +674,10 @@ class BurgBot(commands.Bot):
         cfg = self.get_guild_config(channel.guild.id)
         ping_role_id = cfg["ticket_ping_role_id"] or cfg["chef_role_id"]
         if not ping_role_id:
+            log.info(
+                "No ticket ping role configured for guild %s; skipping notification for #%s.",
+                channel.guild.id, channel.name,
+            )
             return
         role = channel.guild.get_role(ping_role_id)
         if role is None:
@@ -680,8 +691,9 @@ class BurgBot(commands.Bot):
                 f"{role.mention} a new ticket has been opened.",
                 allowed_mentions=discord.AllowedMentions(roles=[role]),
             )
+            log.info("Pinged ticket role %s (%s) in new ticket channel #%s.", role.name, role.id, channel.name)
         except (discord.Forbidden, discord.HTTPException) as exc:
-            log.warning("Failed to notify Chef role in new ticket channel %s: %s", channel.id, exc)
+            log.warning("Failed to notify ticket ping role in new ticket channel %s: %s", channel.id, exc)
 
     async def on_message(self, message: discord.Message):
         await self.process_commands(message)
