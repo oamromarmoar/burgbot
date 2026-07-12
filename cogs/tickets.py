@@ -38,6 +38,27 @@ class Tickets(commands.Cog):
         await ctx.send(embed=ok_embed(f"Recorded {member.mention} as the opener of {channel.mention}."))
 
     @commands.hybrid_command(
+        name="pingedrole",
+        description="Set which role gets pinged when a new ticket channel is created.",
+    )
+    @app_commands.describe(role="Role to ping on new tickets. Omit to clear (falls back to the Chef role).")
+    @app_commands.default_permissions(administrator=True)
+    @commands.has_permissions(administrator=True)
+    @commands.guild_only()
+    async def pingedrole(self, ctx: commands.Context, role: Optional[discord.Role] = None):
+        """Set (or clear) the role pinged when a new ticket channel is
+        created. Requires Administrator."""
+        self.bot.update_guild_config(ctx.guild.id, ticket_ping_role_id=role.id if role else 0)
+        if role:
+            await self.bot.send_log(ctx.guild, f"📌 {ctx.author.mention} set the ticket ping role to {role.mention}.")
+            await ctx.send(embed=ok_embed(f"New tickets will now ping {role.mention}."))
+        else:
+            await self.bot.send_log(ctx.guild, f"📌 {ctx.author.mention} cleared the ticket ping role.")
+            await ctx.send(embed=ok_embed(
+                "Ticket ping role cleared. New tickets will fall back to pinging the Chef role, if set."
+            ))
+
+    @commands.hybrid_command(
         name="ticket_info",
         description="Show what the bot knows about a ticket: detection, opener, and any scheduled removal.",
     )

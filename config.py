@@ -36,7 +36,11 @@ SUSPICIOUS_LOG_CHANNEL_ID: int = int(os.environ.get("SUSPICIOUS_LOG_CHANNEL_ID",
 LOG_CHANNEL_ID: int = int(os.environ.get("LOG_CHANNEL_ID", "0"))
 
 # --- Ticket detection ----------------------------------------------------
-CHEF_ROLE_ID: int = int(os.environ.get("CHEF_ROLE_ID", "1309621978487062657"))
+CHEF_ROLE_ID: int = int(os.environ.get("CHEF_ROLE_ID", "0"))
+
+# Role pinged when a new ticket channel is created. Falls back to CHEF_ROLE_ID
+# when unset. Per-guild override is set via /pingedrole, not the setup wizard.
+TICKET_PING_ROLE_ID: int = int(os.environ.get("TICKET_PING_ROLE_ID", "0"))
 TICKET_DETECTION_MODE: str = os.environ.get("TICKET_DETECTION_MODE", "and")  # "prefix" | "category" | "and"
 TICKET_CHANNEL_PREFIX: str = os.environ.get("TICKET_CHANNEL_PREFIX", "ticket-")
 TICKET_CATEGORY_ID: int = int(os.environ.get("TICKET_CATEGORY_ID", "0"))
@@ -65,6 +69,7 @@ DEFAULT_GUILD_CONFIG: dict = {
     "min_member_retention_seconds": MIN_MEMBER_RETENTION_SECONDS,
     "suspicious_log_channel_id": SUSPICIOUS_LOG_CHANNEL_ID,
     "log_channel_id": LOG_CHANNEL_ID,
+    "ticket_ping_role_id": TICKET_PING_ROLE_ID,
     "welcome_channel_id": 0,
     "welcome_message": DEFAULT_WELCOME_MESSAGE,
     "goodbye_channel_id": 0,

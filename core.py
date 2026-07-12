@@ -661,17 +661,18 @@ class BurgBot(commands.Bot):
                 self.ticket_openers[str(channel.id)] = match.group("id")
                 self.save_ticket_openers()
 
-        await self._notify_chef_of_new_ticket(channel)
+        await self._notify_ticket_ping_role(channel)
 
-    async def _notify_chef_of_new_ticket(self, channel: discord.TextChannel):
-        chef_role_id = self.get_guild_config(channel.guild.id)["chef_role_id"]
-        if not chef_role_id:
+    async def _notify_ticket_ping_role(self, channel: discord.TextChannel):
+        cfg = self.get_guild_config(channel.guild.id)
+        ping_role_id = cfg["ticket_ping_role_id"] or cfg["chef_role_id"]
+        if not ping_role_id:
             return
-        role = channel.guild.get_role(chef_role_id)
+        role = channel.guild.get_role(ping_role_id)
         if role is None:
             log.warning(
-                "chef_role_id %s not found in guild %s; cannot notify of new ticket %s.",
-                chef_role_id, channel.guild.id, channel.id,
+                "ticket ping role %s not found in guild %s; cannot notify of new ticket %s.",
+                ping_role_id, channel.guild.id, channel.id,
             )
             return
         try:
