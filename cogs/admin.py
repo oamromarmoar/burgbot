@@ -162,8 +162,7 @@ class SetupStep1View(AdminOnlyView):
         min_values=0, max_values=1, row=0,
     )
     async def referral_role_select(self, interaction: discord.Interaction, select: discord.ui.RoleSelect):
-        if select.values:
-            self.config["referral_role_id"] = select.values[0].id
+        self.config["referral_role_id"] = select.values[0].id if select.values else 0
         await interaction.response.edit_message(embed=self.render_embed(), view=self)
 
     @discord.ui.select(
@@ -171,8 +170,7 @@ class SetupStep1View(AdminOnlyView):
         min_values=0, max_values=1, row=1,
     )
     async def chef_role_select(self, interaction: discord.Interaction, select: discord.ui.RoleSelect):
-        if select.values:
-            self.config["chef_role_id"] = select.values[0].id
+        self.config["chef_role_id"] = select.values[0].id if select.values else 0
         await interaction.response.edit_message(embed=self.render_embed(), view=self)
 
     @discord.ui.select(
@@ -180,8 +178,7 @@ class SetupStep1View(AdminOnlyView):
         channel_types=[discord.ChannelType.category], min_values=0, max_values=1, row=2,
     )
     async def ticket_category_select(self, interaction: discord.Interaction, select: discord.ui.ChannelSelect):
-        if select.values:
-            self.config["ticket_category_id"] = select.values[0].id
+        self.config["ticket_category_id"] = select.values[0].id if select.values else 0
         await interaction.response.edit_message(embed=self.render_embed(), view=self)
 
     @discord.ui.button(label="Set Ticket Name Prefix", style=discord.ButtonStyle.secondary, row=3)
@@ -276,8 +273,7 @@ class SetupStep3View(AdminOnlyView):
         channel_types=[discord.ChannelType.text], min_values=0, max_values=1, row=0,
     )
     async def suspicious_channel_select(self, interaction: discord.Interaction, select: discord.ui.ChannelSelect):
-        if select.values:
-            self.config["suspicious_log_channel_id"] = select.values[0].id
+        self.config["suspicious_log_channel_id"] = select.values[0].id if select.values else 0
         await interaction.response.edit_message(embed=self.render_embed(), view=self)
 
     @discord.ui.select(
@@ -285,8 +281,7 @@ class SetupStep3View(AdminOnlyView):
         channel_types=[discord.ChannelType.text], min_values=0, max_values=1, row=1,
     )
     async def log_channel_select(self, interaction: discord.Interaction, select: discord.ui.ChannelSelect):
-        if select.values:
-            self.config["log_channel_id"] = select.values[0].id
+        self.config["log_channel_id"] = select.values[0].id if select.values else 0
         await interaction.response.edit_message(embed=self.render_embed(), view=self)
 
     @discord.ui.button(label="◀ Back", style=discord.ButtonStyle.secondary, row=2)
@@ -313,8 +308,7 @@ class SetupStep4View(AdminOnlyView):
         channel_types=[discord.ChannelType.text], min_values=0, max_values=1, row=0,
     )
     async def welcome_channel_select(self, interaction: discord.Interaction, select: discord.ui.ChannelSelect):
-        if select.values:
-            self.config["welcome_channel_id"] = select.values[0].id
+        self.config["welcome_channel_id"] = select.values[0].id if select.values else 0
         await interaction.response.edit_message(embed=self.render_embed(), view=self)
 
     @discord.ui.select(
@@ -322,8 +316,7 @@ class SetupStep4View(AdminOnlyView):
         channel_types=[discord.ChannelType.text], min_values=0, max_values=1, row=1,
     )
     async def goodbye_channel_select(self, interaction: discord.Interaction, select: discord.ui.ChannelSelect):
-        if select.values:
-            self.config["goodbye_channel_id"] = select.values[0].id
+        self.config["goodbye_channel_id"] = select.values[0].id if select.values else 0
         await interaction.response.edit_message(embed=self.render_embed(), view=self)
 
     @discord.ui.button(label="Edit Message Templates", style=discord.ButtonStyle.secondary, row=2)
