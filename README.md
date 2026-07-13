@@ -132,6 +132,20 @@ old flat single-guild files are auto-migrated on startup),
 and poll timers/buttons are all re-armed on startup, so restarts don't drop
 scheduled work.
 
+**This directory must live on persistent storage, or every redeploy resets
+everyone's data.** On Railway (and most container hosts), a service's
+filesystem is ephemeral by default — a fresh deploy gets a brand-new, empty
+disk. To avoid losing referral counts, config, etc. on every push:
+
+1. Attach a persistent **Volume** to the service, with some mount path (e.g. `/data`).
+2. Set `BOT_DATA_DIR` to that exact mount path.
+3. Redeploy once.
+
+The bot logs a loud `WARNING` at startup if it finds no guild config,
+credited members, or referral totals at all — on a host that's been
+configured/used before, that means storage isn't wired up correctly. On a
+genuinely first-ever boot, it's expected and can be ignored.
+
 ## Known limitations
 
 - **Invite attribution is best-effort:** vanity URLs never appear in

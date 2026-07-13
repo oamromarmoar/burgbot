@@ -21,7 +21,7 @@ from discord import app_commands
 from discord.ext import commands
 
 import storage
-from config import DEFAULT_GUILD_CONFIG, EXTENSIONS
+from config import DATA_DIR, DEFAULT_GUILD_CONFIG, EXTENSIONS
 from storage import (
     CREDITED_MEMBERS_FILE,
     GUILD_CONFIG_FILE,
@@ -221,7 +221,30 @@ class BurgBot(commands.Bot):
     # ------------------------------------------------------------------
     # Startup
     # ------------------------------------------------------------------
+    def _log_data_dir_status(self):
+        """Loudly report what persisted state (if any) this boot found, so a
+        wiped/misconfigured data volume shows up in the deploy logs instead
+        of silently starting everyone over at zero."""
+        guild_count = len(self.guild_configs)
+        credited_count = len(self.credited_members)
+        referrer_count = sum(len(v) for v in self.total_referrals.values())
+        log.info(
+            "Data directory: %s (exists=%s). Loaded %d guild config(s), %d credited member(s), "
+            "%d referrer record(s) across guilds.",
+            DATA_DIR.resolve(), DATA_DIR.exists(), guild_count, credited_count, referrer_count,
+        )
+        if guild_count == 0 and credited_count == 0 and referrer_count == 0:
+            log.warning(
+                "No persisted data found at startup (no guild config, credited members, or referral "
+                "totals). If this bot has been configured/used before, this means persistent storage "
+                "isn't attached correctly on this host -- check that BOT_DATA_DIR points at a volume "
+                "mount that survives redeploys, not the container's ephemeral disk. If this really is "
+                "the first-ever boot, ignore this."
+            )
+
     async def setup_hook(self):
+        self._log_data_dir_status()
+
         for extension in EXTENSIONS:
             await self.load_extension(extension)
         log.info("Loaded %d extension(s).", len(EXTENSIONS))
