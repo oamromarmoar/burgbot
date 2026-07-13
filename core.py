@@ -686,14 +686,23 @@ class BurgBot(commands.Bot):
                 ping_role_id, channel.guild.id, channel.id,
             )
             return
-        try:
-            await channel.send(
-                f"{role.mention} a new ticket has been opened.",
-                allowed_mentions=discord.AllowedMentions(roles=[role]),
-            )
-            log.info("Pinged ticket role %s (%s) in new ticket channel #%s.", role.name, role.id, channel.name)
-        except (discord.Forbidden, discord.HTTPException) as exc:
-            log.warning("Failed to notify ticket ping role in new ticket channel %s: %s", channel.id, exc)
+
+        await asyncio.sleep(2)
+        for attempt in range(1, 4):
+            try:
+                await channel.send(
+                    f"{role.mention} a new ticket has been opened.",
+                    allowed_mentions=discord.AllowedMentions(roles=[role]),
+                )
+                log.info(
+                    "Pinged ticket role %s (%s) in new ticket channel #%s (%d/3).",
+                    role.name, role.id, channel.name, attempt,
+                )
+            except (discord.Forbidden, discord.HTTPException) as exc:
+                log.warning("Failed to notify ticket ping role in new ticket channel %s: %s", channel.id, exc)
+                return
+            if attempt < 3:
+                await asyncio.sleep(3)
 
     async def on_message(self, message: discord.Message):
         await self.process_commands(message)
