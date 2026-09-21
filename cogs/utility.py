@@ -28,8 +28,8 @@ MAX_REMINDER_SECONDS = 90 * 24 * 3600
 
 # cog name -> (emoji, blurb) for /help. Cogs not listed here are hidden.
 CATEGORY_META = {
-    "Referrals": ("📈", "Invite tracking, rewards, leaderboard, anti-abuse review"),
-    "Tickets": ("🎫", "Ticket-opener detection and scheduled role removals"),
+    "Invites": ("📨", "Who invited whom, for staff supervision"),
+    "Tickets": ("🎫", "Ticket ping roles, opener detection, and scheduled role removals"),
     "Welcome": ("👋", "Welcome and goodbye messages"),
     "Moderation": ("🛡️", "Purge, kick, ban, timeouts, slowmode, warnings"),
     "Utility": ("🧰", "Info commands, reminders, invites"),
@@ -60,8 +60,8 @@ def _overview_embed(bot: "BurgBot") -> discord.Embed:
         title="🍔 BurgBot — help",
         description=(
             "Pick a category from the dropdown below.\n\n"
-            "Every command works two ways: as a **slash command** (`/referrals`) with Discord's "
-            "autocomplete, or as a **prefix command** (`!referrals`)."
+            "Every command works two ways: as a **slash command** (`/who_invited`) with Discord's "
+            "autocomplete, or as a **prefix command** (`!who_invited`)."
         ),
         color=COLOR_INFO,
     )

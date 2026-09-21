@@ -18,8 +18,6 @@ from config import (
     DEFAULT_GOODBYE_MESSAGE,
     DEFAULT_WELCOME_MESSAGE,
     DELAY_CHOICES,
-    REFERRALS_NEEDED_CHOICES,
-    RETENTION_CHOICES,
 )
 from ui import format_duration, info_embed
 
@@ -48,16 +46,20 @@ def _channel_display(guild: discord.Guild, channel_id) -> str:
 
 def build_config_embed(guild: discord.Guild, config: dict, *, title: str, description: str = "") -> discord.Embed:
     embed = discord.Embed(title=title, description=description, color=discord.Color.blurple())
-    embed.add_field(name="Referral role", value=_role_display(guild, config.get("referral_role_id")))
+    embed.add_field(name="Free meal role", value=_role_display(guild, config.get("referral_role_id")))
     embed.add_field(name="Chef role", value=_role_display(guild, config.get("chef_role_id")))
+    category_pings = len(config.get("ticket_category_ping_roles") or {})
+    embed.add_field(
+        name="Ticket ping role",
+        value=_role_display(guild, config.get("ticket_ping_role_id") or config.get("chef_role_id"))
+        + (f"\n+{category_pings} per-category (`/ticketpings`)" if category_pings else ""),
+    )
     embed.add_field(name="Ticket category", value=_channel_display(guild, config.get("ticket_category_id")))
     embed.add_field(name="Ticket name prefix", value=f"`{config.get('ticket_channel_prefix') or '(none)'}`")
-    embed.add_field(name="Referrals needed", value=str(config.get("referrals_needed", 5)))
     embed.add_field(name="Role removal delay", value=format_duration(config.get("role_removal_delay_seconds")))
-    embed.add_field(name="Min account age", value=format_duration(config.get("min_account_age_seconds")))
-    embed.add_field(name="Min member retention", value=format_duration(config.get("min_member_retention_seconds")))
+    embed.add_field(name="Young-account flag", value=format_duration(config.get("min_account_age_seconds")))
     embed.add_field(
-        name="Suspicious-join log channel", value=_channel_display(guild, config.get("suspicious_log_channel_id"))
+        name="Young-account alert channel", value=_channel_display(guild, config.get("suspicious_log_channel_id"))
     )
     embed.add_field(name="Activity log channel", value=_channel_display(guild, config.get("log_channel_id")))
     embed.add_field(name="Welcome channel", value=_channel_display(guild, config.get("welcome_channel_id")))
@@ -158,7 +160,7 @@ class SetupStep1View(AdminOnlyView):
         return _build_setup_embed(self.guild, self.config, 1)
 
     @discord.ui.select(
-        cls=discord.ui.RoleSelect, placeholder="Referral role (granted after enough referrals)",
+        cls=discord.ui.RoleSelect, placeholder="Free meal role (removed after a Chef handles the ticket)",
         min_values=0, max_values=1, row=0,
     )
     async def referral_role_select(self, interaction: discord.Interaction, select: discord.ui.RoleSelect):
@@ -185,7 +187,7 @@ class SetupStep1View(AdminOnlyView):
     async def set_prefix_button(self, interaction: discord.Interaction, button: discord.ui.Button):
         await interaction.response.send_modal(TicketPrefixModal(self))
 
-    @discord.ui.button(label="Next: Thresholds ▶", style=discord.ButtonStyle.primary, row=4)
+    @discord.ui.button(label="Next: Timing ▶", style=discord.ButtonStyle.primary, row=4)
     async def next_button(self, interaction: discord.Interaction, button: discord.ui.Button):
         view = SetupStep2View(self.bot, self.guild, self.config)
         view.message = self.message
@@ -193,69 +195,43 @@ class SetupStep1View(AdminOnlyView):
 
 
 class SetupStep2View(AdminOnlyView):
-    """Step 2: thresholds + timing."""
+    """Step 2: timing."""
 
     def __init__(self, bot, guild, config):
         super().__init__(bot, guild, config)
-        self.referrals_needed_select.options = [
-            discord.SelectOption(
-                label=f"{n} referral(s)", value=str(n),
-                default=(config.get("referrals_needed") == n),
-            )
-            for n in REFERRALS_NEEDED_CHOICES
-        ]
         self.removal_delay_select.options = _make_duration_options(
             DELAY_CHOICES, config.get("role_removal_delay_seconds")
         )
         self.account_age_select.options = _make_duration_options(
             ACCOUNT_AGE_CHOICES, config.get("min_account_age_seconds")
         )
-        self.retention_select.options = _make_duration_options(
-            RETENTION_CHOICES, config.get("min_member_retention_seconds")
-        )
 
     def render_embed(self) -> discord.Embed:
         return _build_setup_embed(self.guild, self.config, 2)
 
     @discord.ui.select(
-        placeholder="Referrals needed for a reward",
-        options=[discord.SelectOption(label="5 referral(s)", value="5")], row=0,
-    )
-    async def referrals_needed_select(self, interaction: discord.Interaction, select: discord.ui.Select):
-        self.config["referrals_needed"] = int(select.values[0])
-        await interaction.response.edit_message(embed=self.render_embed(), view=self)
-
-    @discord.ui.select(
         placeholder="Delay before removing the role after a Chef reply",
-        options=[discord.SelectOption(label="20 minutes", value="1200")], row=1,
+        options=[discord.SelectOption(label="20 minutes", value="1200")], row=0,
     )
     async def removal_delay_select(self, interaction: discord.Interaction, select: discord.ui.Select):
         self.config["role_removal_delay_seconds"] = int(select.values[0])
         await interaction.response.edit_message(embed=self.render_embed(), view=self)
 
     @discord.ui.select(
-        placeholder="Minimum account age to auto-credit a join",
-        options=[discord.SelectOption(label="3 days", value="259200")], row=2,
+        placeholder="Flag joins from accounts younger than…",
+        options=[discord.SelectOption(label="3 days", value="259200")], row=1,
     )
     async def account_age_select(self, interaction: discord.Interaction, select: discord.ui.Select):
         self.config["min_account_age_seconds"] = int(select.values[0])
         await interaction.response.edit_message(embed=self.render_embed(), view=self)
 
-    @discord.ui.select(
-        placeholder="Min time a referred member must stay before credit finalizes",
-        options=[discord.SelectOption(label="24 hours", value="86400")], row=3,
-    )
-    async def retention_select(self, interaction: discord.Interaction, select: discord.ui.Select):
-        self.config["min_member_retention_seconds"] = int(select.values[0])
-        await interaction.response.edit_message(embed=self.render_embed(), view=self)
-
-    @discord.ui.button(label="◀ Back", style=discord.ButtonStyle.secondary, row=4)
+    @discord.ui.button(label="◀ Back", style=discord.ButtonStyle.secondary, row=2)
     async def back_button(self, interaction: discord.Interaction, button: discord.ui.Button):
         view = SetupStep1View(self.bot, self.guild, self.config)
         view.message = self.message
         await interaction.response.edit_message(embed=view.render_embed(), view=view)
 
-    @discord.ui.button(label="Next: Logging ▶", style=discord.ButtonStyle.primary, row=4)
+    @discord.ui.button(label="Next: Logging ▶", style=discord.ButtonStyle.primary, row=2)
     async def next_button(self, interaction: discord.Interaction, button: discord.ui.Button):
         view = SetupStep3View(self.bot, self.guild, self.config)
         view.message = self.message
@@ -263,13 +239,13 @@ class SetupStep2View(AdminOnlyView):
 
 
 class SetupStep3View(AdminOnlyView):
-    """Step 3: suspicious-join + activity logging."""
+    """Step 3: young-account alerts + activity logging."""
 
     def render_embed(self) -> discord.Embed:
         return _build_setup_embed(self.guild, self.config, 3)
 
     @discord.ui.select(
-        cls=discord.ui.ChannelSelect, placeholder="Channel for suspicious-join alerts (optional)",
+        cls=discord.ui.ChannelSelect, placeholder="Channel for young-account join alerts (optional)",
         channel_types=[discord.ChannelType.text], min_values=0, max_values=1, row=0,
     )
     async def suspicious_channel_select(self, interaction: discord.Interaction, select: discord.ui.ChannelSelect):
@@ -385,7 +361,7 @@ class Admin(commands.Cog):
     @commands.guild_only()
     async def setup_command(self, ctx: commands.Context):
         """(Re)configure this server via the dropdown wizard: roles, ticket
-        detection, thresholds, logging, and welcome messages."""
+        detection, timing, logging, and welcome messages."""
         config = dict(self.bot.get_guild_config(ctx.guild.id))
         view = SetupStep1View(self.bot, ctx.guild, config)
         view.message = await ctx.send(embed=view.render_embed(), view=view)

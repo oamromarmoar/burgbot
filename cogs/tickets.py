@@ -1,6 +1,7 @@
 """
-Ticket tooling: manual opener overrides, ticket inspection, and management of
-scheduled referral-role removals. The detection/removal logic itself lives in
+Ticket tooling: new-ticket ping roles (default and per category), manual
+opener overrides, ticket inspection, and management of scheduled
+referral-role removals. The detection/removal logic itself lives in
 core.py (it's event-driven).
 """
 
@@ -59,6 +60,70 @@ class Tickets(commands.Cog):
             ))
 
     @commands.hybrid_command(
+        name="categoryping",
+        description="Set which role gets pinged for new tickets in a specific category (one per ticket panel).",
+    )
+    @app_commands.describe(
+        category="The category that panel's tickets are created in.",
+        role="Role to ping for tickets there. Omit to clear (falls back to /pingedrole).",
+    )
+    @app_commands.default_permissions(administrator=True)
+    @commands.has_permissions(administrator=True)
+    @commands.guild_only()
+    async def categoryping(
+        self, ctx: commands.Context, category: discord.CategoryChannel, role: Optional[discord.Role] = None
+    ):
+        """Set (or clear) the role pinged for new tickets created in one
+        category, e.g. a Refunds panel's category pings the Refunds team.
+        Requires Administrator."""
+        cfg = self.bot.get_guild_config(ctx.guild.id)
+        mapping = dict(cfg["ticket_category_ping_roles"])
+        if role:
+            mapping[str(category.id)] = role.id
+        elif mapping.pop(str(category.id), None) is None:
+            await ctx.send(embed=error_embed(f"**{category.name}** doesn't have its own ping role."))
+            return
+        self.bot.update_guild_config(ctx.guild.id, ticket_category_ping_roles=mapping)
+
+        if not role:
+            await self.bot.send_log(
+                ctx.guild, f"📌 {ctx.author.mention} cleared the ticket ping role for **{category.name}**."
+            )
+            await ctx.send(embed=ok_embed(
+                f"New tickets in **{category.name}** will fall back to the default ticket ping role."
+            ))
+            return
+        await self.bot.send_log(
+            ctx.guild, f"📌 {ctx.author.mention} set the ticket ping role for **{category.name}** to {role.mention}."
+        )
+        message = f"New tickets in **{category.name}** will now ping {role.mention}."
+        prefix = cfg["ticket_channel_prefix"]
+        if prefix and cfg["ticket_detection_mode"] != "category":
+            message += f"\nChannels there still need to start with `{prefix}` to count as tickets."
+        await ctx.send(embed=ok_embed(message))
+
+    @commands.hybrid_command(
+        name="ticketpings", description="Show which role gets pinged for new tickets, per category."
+    )
+    @app_commands.default_permissions(administrator=True)
+    @commands.has_permissions(administrator=True)
+    @commands.guild_only()
+    async def ticketpings(self, ctx: commands.Context):
+        """Show the default ticket ping role and every per-category override."""
+        cfg = self.bot.get_guild_config(ctx.guild.id)
+        default_id = cfg["ticket_ping_role_id"] or cfg["chef_role_id"]
+        lines = [
+            f"**Default** (`/pingedrole`): {f'<@&{default_id}>' if default_id else '*none — no ping*'}"
+        ]
+        for category_id, role_id in cfg["ticket_category_ping_roles"].items():
+            category = ctx.guild.get_channel(int(category_id))
+            name = f"**{category.name}**" if category else f"`{category_id}` (category not found)"
+            lines.append(f"{name}: <@&{role_id}>")
+        if len(lines) == 1:
+            lines.append("\nNo per-category roles yet — add one with `/categoryping`.")
+        await ctx.send(embed=info_embed("\n".join(lines), title="📌 Ticket ping roles"))
+
+    @commands.hybrid_command(
         name="ticket_info",
         description="Show what the bot knows about a ticket: detection, opener, and any scheduled removal.",
     )
@@ -76,6 +141,8 @@ class Tickets(commands.Cog):
 
         opener = await self.bot.get_ticket_opener(channel) if is_ticket else None
         embed.add_field(name="Opener", value=opener.mention if opener else "*unknown*")
+        ping_role_id = self.bot.ticket_ping_role_id(channel) if is_ticket else 0
+        embed.add_field(name="Ping role", value=f"<@&{ping_role_id}>" if ping_role_id else "*none*")
 
         removal = next(
             (e for e in self.bot.pending_removals.values() if e["channel_id"] == channel.id), None

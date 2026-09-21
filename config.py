@@ -20,17 +20,13 @@ except ImportError:
 
 DISCORD_TOKEN = os.environ.get("DISCORD_TOKEN", "")
 
-# --- Referrals ----------------------------------------------------------
+# --- Referral (free meal) role -------------------------------------------
+# Granted by staff; removed from a ticket opener after a Chef handles the ticket.
 REFERRAL_ROLE_ID: int = int(os.environ.get("REFERRAL_ROLE_ID", "0"))
-REFERRALS_NEEDED: int = int(os.environ.get("REFERRALS_NEEDED", "5"))
 
-# --- Anti-abuse ----------------------------------------------------------
-# Accounts younger than this are queued for manual staff review instead of
-# auto-credited (defends against freshly created alt accounts).
+# --- Invite supervision ----------------------------------------------------
+# Joins from accounts younger than this are flagged in the invite log.
 MIN_ACCOUNT_AGE_SECONDS: int = int(os.environ.get("MIN_ACCOUNT_AGE_SECONDS", str(3 * 24 * 3600)))
-
-# A credit is held this long and voided if the member leaves early.
-MIN_MEMBER_RETENTION_SECONDS: int = int(os.environ.get("MIN_MEMBER_RETENTION_SECONDS", str(24 * 3600)))
 
 SUSPICIOUS_LOG_CHANNEL_ID: int = int(os.environ.get("SUSPICIOUS_LOG_CHANNEL_ID", "0"))
 LOG_CHANNEL_ID: int = int(os.environ.get("LOG_CHANNEL_ID", "0"))
@@ -39,7 +35,8 @@ LOG_CHANNEL_ID: int = int(os.environ.get("LOG_CHANNEL_ID", "0"))
 CHEF_ROLE_ID: int = int(os.environ.get("CHEF_ROLE_ID", "0"))
 
 # Role pinged when a new ticket channel is created. Falls back to CHEF_ROLE_ID
-# when unset. Per-guild override is set via /pingedrole, not the setup wizard.
+# when unset. Per-guild override is set via /pingedrole, not the setup wizard;
+# per-category overrides (one role per ticket panel) via /categoryping.
 TICKET_PING_ROLE_ID: int = int(os.environ.get("TICKET_PING_ROLE_ID", "0"))
 TICKET_DETECTION_MODE: str = os.environ.get("TICKET_DETECTION_MODE", "and")  # "prefix" | "category" | "and"
 TICKET_CHANNEL_PREFIX: str = os.environ.get("TICKET_CHANNEL_PREFIX", "ticket-")
@@ -59,17 +56,19 @@ DEFAULT_GOODBYE_MESSAGE = "**{name}** has left {server}. We are now **{count}** 
 
 DEFAULT_GUILD_CONFIG: dict = {
     "referral_role_id": REFERRAL_ROLE_ID,
-    "referrals_needed": REFERRALS_NEEDED,
     "chef_role_id": CHEF_ROLE_ID,
     "ticket_detection_mode": TICKET_DETECTION_MODE,
     "ticket_channel_prefix": TICKET_CHANNEL_PREFIX,
     "ticket_category_id": TICKET_CATEGORY_ID,
     "role_removal_delay_seconds": ROLE_REMOVAL_DELAY_SECONDS,
     "min_account_age_seconds": MIN_ACCOUNT_AGE_SECONDS,
-    "min_member_retention_seconds": MIN_MEMBER_RETENTION_SECONDS,
     "suspicious_log_channel_id": SUSPICIOUS_LOG_CHANNEL_ID,
     "log_channel_id": LOG_CHANNEL_ID,
     "ticket_ping_role_id": TICKET_PING_ROLE_ID,
+    # {category_id (str): role_id} -- tickets created in these categories ping
+    # that role instead of ticket_ping_role_id. Treat as read-only; copy
+    # before modifying (this default is shared across guilds).
+    "ticket_category_ping_roles": {},
     "welcome_channel_id": 0,
     "welcome_message": DEFAULT_WELCOME_MESSAGE,
     "goodbye_channel_id": 0,
@@ -77,8 +76,6 @@ DEFAULT_GUILD_CONFIG: dict = {
 }
 
 # --- Setup wizard preset choices ------------------------------------------
-REFERRALS_NEEDED_CHOICES = [1, 3, 5, 10, 15, 20, 25, 50]
-
 DELAY_CHOICES = [
     ("5 minutes", 300), ("10 minutes", 600), ("20 minutes", 1200),
     ("30 minutes", 1800), ("1 hour", 3600), ("2 hours", 7200),
@@ -87,14 +84,10 @@ ACCOUNT_AGE_CHOICES = [
     ("Disabled (no minimum)", 0), ("1 day", 86400), ("3 days", 259200),
     ("7 days", 604800), ("14 days", 1209600), ("30 days", 2592000),
 ]
-RETENTION_CHOICES = [
-    ("Disabled (credit immediately)", 0), ("1 hour", 3600), ("6 hours", 21600),
-    ("12 hours", 43200), ("24 hours", 86400), ("48 hours", 172800), ("72 hours", 259200),
-]
 
 # Extensions loaded on startup. Order matters only for /help category order.
 EXTENSIONS = [
-    "cogs.referrals",
+    "cogs.invites",
     "cogs.tickets",
     "cogs.welcome",
     "cogs.moderation",

@@ -1,7 +1,7 @@
 """
 BurgBot core: persistent state, gateway event handling, and the business
-logic for referral crediting, anti-abuse, ticket role removal, and
-restart-safe timers (credits, removals, reminders).
+logic for invite logging, ticket pings, ticket role removal, and
+restart-safe timers (removals, reminders).
 
 Commands and interactive UI live in the cogs; they call into the methods
 defined here.
@@ -23,20 +23,17 @@ from discord.ext import commands
 import storage
 from config import DATA_DIR, DEFAULT_GUILD_CONFIG, EXTENSIONS
 from storage import (
-    CREDITED_MEMBERS_FILE,
     GUILD_CONFIG_FILE,
-    PENDING_CREDITS_FILE,
+    INVITED_BY_FILE,
+    LEGACY_PENDING_CREDITS_FILE,
+    LEGACY_SUSPICIOUS_JOINS_FILE,
     PENDING_REMOVALS_FILE,
-    REFERRAL_PROGRESS_FILE,
     REMINDERS_FILE,
-    SUSPICIOUS_JOINS_FILE,
     SYNCED_COMMANDS_FILE,
     TICKET_OPENERS_FILE,
-    TOTAL_REFERRALS_FILE,
     WARNINGS_FILE,
     POLLS_FILE,
     load_json,
-    load_per_guild_counts,
     save_json,
 )
 from ui import error_embed
@@ -48,18 +45,10 @@ class BurgBot(commands.Bot):
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
         self.launch_time = discord.utils.utcnow()
-        self._migrated_legacy = False
         self._synced_commands_hash: Optional[str] = load_json(SYNCED_COMMANDS_FILE, {}).get("hash")
 
         # guild_id -> {invite_code: uses}
         self.invite_cache: dict[int, dict[str, int]] = {}
-
-        # {guild_id: {referrer_id: count}} -- referrals since the member's
-        # last reward; reset to 0 when the referral role is removed.
-        self.referral_progress: dict = load_per_guild_counts(REFERRAL_PROGRESS_FILE)
-
-        # {guild_id: {referrer_id: count}} -- lifetime totals, never reset.
-        self.total_referrals: dict = load_per_guild_counts(TOTAL_REFERRALS_FILE)
 
         # channel_id (str) -> opener member_id (str)
         self.ticket_openers: dict[str, str] = load_json(TICKET_OPENERS_FILE, {})
@@ -68,15 +57,9 @@ class BurgBot(commands.Bot):
         self.pending_removals: dict[str, dict] = load_json(PENDING_REMOVALS_FILE, {})
         self._removal_tasks: dict[str, asyncio.Task] = {}
 
-        # member_id (str) -> referrer_id (str). Permanent one-credit-per-account record.
-        self.credited_members: dict[str, str] = load_json(CREDITED_MEMBERS_FILE, {})
-
-        # member_id (str) -> {"guild_id", "member_id", "referrer_id", "credit_at"}
-        self.pending_credits: dict[str, dict] = load_json(PENDING_CREDITS_FILE, {})
-        self._credit_tasks: dict[str, asyncio.Task] = {}
-
-        # member_id (str) -> {"guild_id", "member_id", "referrer_id", "account_age_seconds", "flagged_at"}
-        self.suspicious_joins: dict[str, dict] = load_json(SUSPICIOUS_JOINS_FILE, {})
+        # member_id (str) -> inviter_id (str), from the member's latest attributed join.
+        self.invited_by: dict[str, str] = load_json(INVITED_BY_FILE, {})
+        self._fold_legacy_invite_records()
 
         # guild_id (str) -> partial config dict set via /setup.
         self.guild_configs: dict[str, dict] = load_json(GUILD_CONFIG_FILE, {})
@@ -107,64 +90,19 @@ class BurgBot(commands.Bot):
         self.guild_configs[key].update(fields)
         save_json(GUILD_CONFIG_FILE, self.guild_configs)
 
-    # ------------------------------------------------------------------
-    # Referral count bookkeeping (per guild)
-    # ------------------------------------------------------------------
-    @staticmethod
-    def _get_count(store: dict, guild_id: int, user_id: int) -> int:
-        return store.get(str(guild_id), {}).get(str(user_id), 0)
-
-    @staticmethod
-    def _bump_count(store: dict, guild_id: int, user_id: int, amount: int) -> int:
-        guild_map = store.setdefault(str(guild_id), {})
-        key = str(user_id)
-        guild_map[key] = max(0, guild_map.get(key, 0) + amount)
-        return guild_map[key]
-
-    def get_progress(self, guild_id: int, user_id: int) -> int:
-        return self._get_count(self.referral_progress, guild_id, user_id)
-
-    def get_total(self, guild_id: int, user_id: int) -> int:
-        return self._get_count(self.total_referrals, guild_id, user_id)
-
-    def adjust_referral_counts(self, guild_id: int, user_id: int, amount: int) -> tuple[int, int]:
-        """Bump both progress and lifetime total (floored at 0), persist, and
-        return (progress, total)."""
-        progress = self._bump_count(self.referral_progress, guild_id, user_id, amount)
-        total = self._bump_count(self.total_referrals, guild_id, user_id, amount)
-        self._save_referral_progress()
-        self._save_total_referrals()
-        return progress, total
-
-    def reset_progress(self, guild_id: int, user_id: int):
-        guild_map = self.referral_progress.get(str(guild_id), {})
-        if str(user_id) in guild_map:
-            guild_map[str(user_id)] = 0
-            self._save_referral_progress()
-
-    def _migrate_legacy_counts(self):
-        """Old deployments stored counts flat ({user_id: count}); fold that
-        into the per-guild schema once we can see which guild the bot serves."""
-        for path, store in (
-            (REFERRAL_PROGRESS_FILE, self.referral_progress),
-            (TOTAL_REFERRALS_FILE, self.total_referrals),
-        ):
-            legacy = store.get("_legacy")
-            if legacy is None:
-                continue
-            if len(self.guilds) != 1:
-                log.warning(
-                    "Legacy referral data in %s cannot be auto-migrated because the bot is in "
-                    "%d guilds; it is preserved under the \"_legacy\" key.",
-                    path.name, len(self.guilds),
-                )
-                continue
-            guild_map = store.setdefault(str(self.guilds[0].id), {})
-            for user_id, count in legacy.items():
-                guild_map[user_id] = guild_map.get(user_id, 0) + count
-            del store["_legacy"]
-            save_json(path, store)
-            log.info("Migrated legacy counts in %s to guild %s.", path.name, self.guilds[0].id)
+    def _fold_legacy_invite_records(self):
+        """Joins that were still awaiting credit or staff review when invite
+        scoring was removed never made it into invited_by; fold them in so
+        /who_invited keeps answering for those members."""
+        added = 0
+        for path in (LEGACY_PENDING_CREDITS_FILE, LEGACY_SUSPICIOUS_JOINS_FILE):
+            for member_id, entry in load_json(path, {}).items():
+                if member_id not in self.invited_by:
+                    self.invited_by[member_id] = str(entry["referrer_id"])
+                    added += 1
+        if added:
+            self.save_invited_by()
+            log.info("Folded %d leftover pending/flagged join(s) into the invite record.", added)
 
     # ------------------------------------------------------------------
     # Activity log channel
@@ -188,26 +126,14 @@ class BurgBot(commands.Bot):
     # ------------------------------------------------------------------
     # Persistence helpers
     # ------------------------------------------------------------------
-    def _save_referral_progress(self):
-        save_json(REFERRAL_PROGRESS_FILE, self.referral_progress)
-
-    def _save_total_referrals(self):
-        save_json(TOTAL_REFERRALS_FILE, self.total_referrals)
-
     def _save_pending_removals(self):
         save_json(PENDING_REMOVALS_FILE, self.pending_removals)
 
     def save_ticket_openers(self):
         save_json(TICKET_OPENERS_FILE, self.ticket_openers)
 
-    def _save_credited_members(self):
-        save_json(CREDITED_MEMBERS_FILE, self.credited_members)
-
-    def _save_pending_credits(self):
-        save_json(PENDING_CREDITS_FILE, self.pending_credits)
-
-    def save_suspicious_joins(self):
-        save_json(SUSPICIOUS_JOINS_FILE, self.suspicious_joins)
+    def save_invited_by(self):
+        save_json(INVITED_BY_FILE, self.invited_by)
 
     def save_warnings(self):
         save_json(WARNINGS_FILE, self.warnings)
@@ -226,17 +152,15 @@ class BurgBot(commands.Bot):
         wiped/misconfigured data volume shows up in the deploy logs instead
         of silently starting everyone over at zero."""
         guild_count = len(self.guild_configs)
-        credited_count = len(self.credited_members)
-        referrer_count = sum(len(v) for v in self.total_referrals.values())
+        invited_count = len(self.invited_by)
         log.info(
-            "Data directory: %s (exists=%s). Loaded %d guild config(s), %d credited member(s), "
-            "%d referrer record(s) across guilds.",
-            DATA_DIR.resolve(), DATA_DIR.exists(), guild_count, credited_count, referrer_count,
+            "Data directory: %s (exists=%s). Loaded %d guild config(s), %d invite record(s).",
+            DATA_DIR.resolve(), DATA_DIR.exists(), guild_count, invited_count,
         )
-        if guild_count == 0 and credited_count == 0 and referrer_count == 0:
+        if guild_count == 0 and invited_count == 0:
             log.warning(
-                "No persisted data found at startup (no guild config, credited members, or referral "
-                "totals). If this bot has been configured/used before, this means persistent storage "
+                "No persisted data found at startup (no guild config or invite records). "
+                "If this bot has been configured/used before, this means persistent storage "
                 "isn't attached correctly on this host -- check that BOT_DATA_DIR points at a volume "
                 "mount that survives redeploys, not the container's ephemeral disk. If this really is "
                 "the first-ever boot, ignore this."
@@ -252,8 +176,6 @@ class BurgBot(commands.Bot):
         # Re-arm every timer that survived the restart.
         for key, entry in list(self.pending_removals.items()):
             self._arm_removal_task(key, entry)
-        for key, entry in list(self.pending_credits.items()):
-            self._arm_credit_task(key, entry)
         for rid, entry in list(self.reminders.items()):
             self._arm_reminder_task(rid, entry)
 
@@ -289,10 +211,6 @@ class BurgBot(commands.Bot):
         delay = max(0.0, entry["remove_at"] - time.time())
         self._removal_tasks[key] = asyncio.create_task(self._removal_worker(key, entry, delay))
 
-    def _arm_credit_task(self, key: str, entry: dict):
-        delay = max(0.0, entry["credit_at"] - time.time())
-        self._credit_tasks[key] = asyncio.create_task(self._pending_credit_worker(key, entry, delay))
-
     def _arm_reminder_task(self, rid: str, entry: dict):
         delay = max(0.0, entry["remind_at"] - time.time())
         self._reminder_tasks[rid] = asyncio.create_task(self._reminder_worker(rid, entry, delay))
@@ -302,9 +220,6 @@ class BurgBot(commands.Bot):
         for guild in self.guilds:
             await self.cache_guild_invites(guild)
         log.info("Cached invites for %d guild(s).", len(self.invite_cache))
-        if not self._migrated_legacy:
-            self._migrated_legacy = True
-            self._migrate_legacy_counts()
         try:
             await self.change_presence(
                 activity=discord.Activity(type=discord.ActivityType.listening, name="/help")
@@ -313,7 +228,7 @@ class BurgBot(commands.Bot):
             pass
 
     # ------------------------------------------------------------------
-    # Invite caching / attribution (referrals)
+    # Invite caching / attribution
     # ------------------------------------------------------------------
     async def cache_guild_invites(self, guild: discord.Guild):
         try:
@@ -342,8 +257,8 @@ class BurgBot(commands.Bot):
         embed = discord.Embed(
             title="Thanks for adding me! 🍔",
             description=(
-                "An **administrator** needs to run setup before referral tracking, ticket "
-                "role removal, or welcome messages will do anything. Click below, or run "
+                "An **administrator** needs to run setup before invite logging, ticket "
+                "pings, ticket role removal, or welcome messages will do anything. Click below, or run "
                 "`/setup` any time to (re)configure.\n\nRun `/help` to see everything I can do."
             ),
             color=discord.Color.blurple(),
@@ -390,189 +305,46 @@ class BurgBot(commands.Bot):
         if used_invite is None or used_invite.inviter is None:
             # KNOWN LIMITATION: simultaneous joins via different invites, or a
             # vanity URL (which never appears in guild.invites()), cannot be
-            # attributed reliably. Skip crediting rather than guess.
+            # attributed reliably. Skip logging an inviter rather than guess.
             log.info("Could not attribute join of %s to a specific invite.", member)
             return
 
-        await self._attribute_join(guild, used_invite.inviter, member)
+        await self._record_invite(guild, used_invite, member)
 
-    async def _attribute_join(self, guild: discord.Guild, referrer: discord.abc.User, new_member: discord.Member):
+    async def _record_invite(self, guild: discord.Guild, invite: discord.Invite, new_member: discord.Member):
+        """Remember and log who invited whom, for staff supervision. Nothing is
+        scored or rewarded; young accounts are flagged so staff can take a look."""
+        inviter = invite.inviter
         member_key = str(new_member.id)
+        previous_id = self.invited_by.get(member_key)
+        self.invited_by[member_key] = str(inviter.id)
+        self.save_invited_by()
+
         cfg = self.get_guild_config(guild.id)
-
-        # Anti leave/rejoin farming: a given account can only ever be credited
-        # once, no matter how many times it rejoins or whose invite it uses.
-        if member_key in self.credited_members:
-            log.info("%s was already credited previously; ignoring repeat join.", new_member)
-            return
-        if member_key in self.pending_credits or member_key in self.suspicious_joins:
-            log.info("%s already has a pending credit/review; ignoring repeat join.", new_member)
-            return
-
         account_age = time.time() - new_member.created_at.timestamp()
-        if account_age < cfg["min_account_age_seconds"]:
-            await self._flag_suspicious(guild, referrer, new_member, account_age)
-            return
+        min_age = cfg["min_account_age_seconds"]
+        young = bool(min_age) and account_age < min_age
 
-        entry = {
-            "guild_id": guild.id,
-            "member_id": new_member.id,
-            "referrer_id": referrer.id,
-            "credit_at": time.time() + cfg["min_member_retention_seconds"],
-        }
-        self.pending_credits[member_key] = entry
-        self._save_pending_credits()
-        self._arm_credit_task(member_key, entry)
-        log.info(
-            "Queued referral credit for %s (via %s), finalizing in %ds if they stay.",
-            new_member, referrer, cfg["min_member_retention_seconds"],
-        )
+        message = f"📨 {new_member.mention} joined via {inviter.mention}'s invite `{invite.code}`."
+        if previous_id:
+            message += f" (Rejoin — previously invited by <@{previous_id}>.)"
+        if young:
+            message += (
+                f"\n⚠️ Young account: {account_age / 3600:.1f}h old "
+                f"(below the {min_age / 3600:.1f}h minimum)."
+            )
+        await self.send_log(guild, message, color=discord.Color.orange() if young else None)
 
-    async def _flag_suspicious(
-        self, guild: discord.Guild, referrer: discord.abc.User, new_member: discord.Member, account_age: float
-    ):
-        member_key = str(new_member.id)
-        cfg = self.get_guild_config(guild.id)
-        entry = {
-            "guild_id": guild.id,
-            "member_id": new_member.id,
-            "referrer_id": referrer.id,
-            "account_age_seconds": account_age,
-            "flagged_at": time.time(),
-        }
-        self.suspicious_joins[member_key] = entry
-        self.save_suspicious_joins()
-        await self.send_log(
-            guild,
-            f"⚠️ Flagged join: {new_member.mention} (account age {account_age / 3600:.1f}h, below "
-            f"{cfg['min_account_age_seconds'] / 3600:.1f}h minimum) referred by {referrer.mention}. "
-            f"Review with `/suspicious_joins`.",
-            color=discord.Color.orange(),
-        )
-        if cfg["suspicious_log_channel_id"]:
+        if young and cfg["suspicious_log_channel_id"]:
             channel = guild.get_channel(cfg["suspicious_log_channel_id"])
             if isinstance(channel, discord.TextChannel):
                 try:
                     await channel.send(
-                        f"Suspicious referral join: {new_member.mention} (account age "
-                        f"{account_age / 3600:.1f}h) referred by {referrer.mention}. "
-                        f"Review with `/suspicious_joins` and approve or deny from there."
+                        f"Young account joined: {new_member.mention} (account age "
+                        f"{account_age / 3600:.1f}h) via {inviter.mention}'s invite."
                     )
                 except (discord.Forbidden, discord.HTTPException) as exc:
-                    log.warning("Failed to post suspicious-join notice: %s", exc)
-
-    async def on_member_remove(self, member: discord.Member):
-        # Leaving before the retention window elapses voids the pending credit.
-        key = str(member.id)
-        entry = self.pending_credits.pop(key, None)
-        if entry is not None:
-            self._save_pending_credits()
-            task = self._credit_tasks.pop(key, None)
-            if task is not None:
-                task.cancel()
-            log.info("%s left before the retention window elapsed; credit voided.", member)
-
-    async def _pending_credit_worker(self, key: str, entry: dict, delay: float):
-        try:
-            await asyncio.sleep(delay)
-            await self._finalize_credit(entry)
-        finally:
-            self.pending_credits.pop(key, None)
-            self._save_pending_credits()
-            self._credit_tasks.pop(key, None)
-
-    async def _finalize_credit(self, entry: dict):
-        guild = self.get_guild(entry["guild_id"])
-        if guild is None:
-            log.warning("Guild %s no longer available; dropping pending credit.", entry["guild_id"])
-            return
-        member = guild.get_member(entry["member_id"])
-        if member is None:
-            # on_member_remove should already have voided this; double-check
-            # in case that event was missed.
-            log.info("Member %s no longer in guild %s; not crediting.", entry["member_id"], guild.id)
-            return
-
-        member_key = str(entry["member_id"])
-        referrer_key = str(entry["referrer_id"])
-        self.credited_members[member_key] = referrer_key
-        self._save_credited_members()
-        await self.send_log(guild, f"✅ Credited referral: {member.mention} joined via <@{referrer_key}>.")
-        await self.credit_referrer(guild, entry["referrer_id"], member)
-
-    async def credit_referrer(self, guild: discord.Guild, referrer_id: int, new_member: discord.Member):
-        cfg = self.get_guild_config(guild.id)
-        progress, total = self.adjust_referral_counts(guild.id, referrer_id, 1)
-
-        await self.send_log(
-            guild,
-            f"📈 <@{referrer_id}>: {progress}/{cfg['referrals_needed']} toward next reward "
-            f"({total} lifetime, last joined: {new_member.mention}).",
-        )
-
-        if cfg["referral_role_id"] and progress >= cfg["referrals_needed"]:
-            await self.grant_referral_role(guild, referrer_id)
-
-    async def grant_referral_role(self, guild: discord.Guild, referrer_id: int):
-        cfg = self.get_guild_config(guild.id)
-        role = guild.get_role(cfg["referral_role_id"])
-        if role is None:
-            log.warning("referral_role_id %s not found in guild %s.", cfg["referral_role_id"], guild.id)
-            return
-        member = guild.get_member(referrer_id)
-        if member is None:
-            try:
-                member = await guild.fetch_member(referrer_id)
-            except discord.NotFound:
-                log.warning("Referrer %s is no longer in guild %s.", referrer_id, guild.id)
-                return
-            except discord.HTTPException as exc:
-                log.warning("Failed to fetch referrer %s: %s", referrer_id, exc)
-                return
-        if role in member.roles:
-            return
-        try:
-            await member.add_roles(role, reason=f"Reached {cfg['referrals_needed']} referrals")
-            await self.send_log(guild, f"🎉 Granted {role.mention} to {member.mention}.", color=discord.Color.green())
-        except discord.Forbidden:
-            log.error(
-                "Forbidden: cannot grant role %s to %s. "
-                "Check the bot's top role is above the referral role and it has Manage Roles.",
-                role, member,
-            )
-        except discord.HTTPException as exc:
-            log.error("HTTPException granting role to %s: %s", member, exc)
-
-    # ------------------------------------------------------------------
-    # Suspicious-join review (shared by command + buttons in cogs/referrals.py)
-    # ------------------------------------------------------------------
-    async def approve_suspicious_join(
-        self, guild: discord.Guild, member_id: int, moderator: discord.abc.User
-    ) -> tuple[bool, str]:
-        key = str(member_id)
-        entry = self.suspicious_joins.get(key)
-        if entry is None:
-            return False, f"No suspicious join on record for <@{member_id}>."
-        member = guild.get_member(member_id)
-        if member is None:
-            return False, f"<@{member_id}> is no longer in the server — deny the entry instead."
-        self.suspicious_joins.pop(key)
-        self.save_suspicious_joins()
-        self.credited_members[key] = str(entry["referrer_id"])
-        self._save_credited_members()
-        await self.credit_referrer(guild, entry["referrer_id"], member)
-        await self.send_log(guild, f"👍 {moderator.mention} approved the flagged join of {member.mention}.")
-        return True, f"Approved and credited the referral for {member.mention}."
-
-    async def deny_suspicious_join(
-        self, guild: discord.Guild, member_id: int, moderator: discord.abc.User
-    ) -> tuple[bool, str]:
-        key = str(member_id)
-        if self.suspicious_joins.pop(key, None) is None:
-            return False, f"No suspicious join on record for <@{member_id}>."
-        self.save_suspicious_joins()
-        await self.send_log(guild, f"👎 {moderator.mention} denied the flagged join of <@{member_id}>.")
-        return True, f"Denied referral credit for <@{member_id}>."
+                    log.warning("Failed to post young-account notice: %s", exc)
 
     # ------------------------------------------------------------------
     # Ticket detection + role removal
@@ -583,7 +355,17 @@ class BurgBot(commands.Bot):
         category_id = cfg["ticket_category_id"]
 
         name_match = channel.name.startswith(prefix) if prefix else False
-        category_match = category_id != 0 and getattr(channel, "category_id", None) == category_id
+
+        # A category with its own ping role (/categoryping) is a ticket
+        # category in its own right; only the name prefix, if the detection
+        # mode uses one, still applies.
+        channel_category_id = getattr(channel, "category_id", None)
+        if channel_category_id and str(channel_category_id) in cfg["ticket_category_ping_roles"]:
+            if cfg["ticket_detection_mode"] == "category" or not prefix:
+                return True
+            return name_match
+
+        category_match = category_id != 0 and channel_category_id == category_id
 
         if cfg["ticket_detection_mode"] == "prefix":
             return name_match
@@ -693,9 +475,15 @@ class BurgBot(commands.Bot):
 
         await self._notify_ticket_ping_role(channel)
 
-    async def _notify_ticket_ping_role(self, channel: discord.TextChannel):
+    def ticket_ping_role_id(self, channel: discord.TextChannel) -> int:
+        """The role to ping for a new ticket: the role mapped to the channel's
+        category via /categoryping, else /pingedrole, else the Chef role."""
         cfg = self.get_guild_config(channel.guild.id)
-        ping_role_id = cfg["ticket_ping_role_id"] or cfg["chef_role_id"]
+        category_role_id = cfg["ticket_category_ping_roles"].get(str(channel.category_id))
+        return category_role_id or cfg["ticket_ping_role_id"] or cfg["chef_role_id"]
+
+    async def _notify_ticket_ping_role(self, channel: discord.TextChannel):
+        ping_role_id = self.ticket_ping_role_id(channel)
         if not ping_role_id:
             log.info(
                 "No ticket ping role configured for guild %s; skipping notification for #%s.",
@@ -809,9 +597,6 @@ class BurgBot(commands.Bot):
                 guild, f"🔻 Removed {role.mention} from {member.mention} (ticket handled).",
                 color=discord.Color.orange(),
             )
-            # Prize claimed: reset progress toward the *next* reward. Lifetime
-            # totals are untouched.
-            self.reset_progress(guild.id, member.id)
         except discord.Forbidden:
             log.error(
                 "Forbidden: cannot remove role %s from %s. "

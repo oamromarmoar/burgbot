@@ -11,13 +11,13 @@ from config import DATA_DIR
 
 log = logging.getLogger("burgbot.storage")
 
-REFERRAL_PROGRESS_FILE = DATA_DIR / "referral_progress.json"
-TOTAL_REFERRALS_FILE = DATA_DIR / "total_referrals.json"
 PENDING_REMOVALS_FILE = DATA_DIR / "pending_removals.json"
 TICKET_OPENERS_FILE = DATA_DIR / "ticket_openers.json"
-CREDITED_MEMBERS_FILE = DATA_DIR / "credited_members.json"
-PENDING_CREDITS_FILE = DATA_DIR / "pending_credits.json"
-SUSPICIOUS_JOINS_FILE = DATA_DIR / "suspicious_joins.json"
+# Filename kept from when invites were scored, so existing records carry over.
+INVITED_BY_FILE = DATA_DIR / "credited_members.json"
+# Legacy: only read once at startup to fold leftover records into INVITED_BY_FILE.
+LEGACY_PENDING_CREDITS_FILE = DATA_DIR / "pending_credits.json"
+LEGACY_SUSPICIOUS_JOINS_FILE = DATA_DIR / "suspicious_joins.json"
 GUILD_CONFIG_FILE = DATA_DIR / "guild_config.json"
 SYNCED_COMMANDS_FILE = DATA_DIR / "synced_commands.json"
 WARNINGS_FILE = DATA_DIR / "warnings.json"
@@ -43,13 +43,3 @@ def save_json(path: Path, data) -> None:
         json.dump(data, f, indent=2)
     tmp.replace(path)  # atomic on POSIX and Windows
 
-
-def load_per_guild_counts(path: Path) -> dict:
-    """Load a {guild_id: {user_id: count}} file, wrapping data written by the
-    old single-guild schema ({user_id: count}) under "_legacy" so it can be
-    migrated once the bot knows which guild it belongs to."""
-    data = load_json(path, {})
-    if data and any(isinstance(v, int) for v in data.values()):
-        log.info("Detected legacy flat counts in %s; queued for migration.", path.name)
-        return {"_legacy": data}
-    return data

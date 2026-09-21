@@ -1,5 +1,5 @@
 """
-Shared UI helpers: consistent embed styling, progress bars, human-friendly
+Shared UI helpers: consistent embed styling, vote bars, human-friendly
 durations, and a reusable button paginator.
 """
 
@@ -30,13 +30,6 @@ def warn_embed(description: str, *, title: Optional[str] = None) -> discord.Embe
 
 def error_embed(description: str, *, title: Optional[str] = None) -> discord.Embed:
     return discord.Embed(title=title, description=description, color=COLOR_ERROR)
-
-
-def progress_bar(current: int, needed: int, slots: int = 10) -> str:
-    """Render e.g. `▰▰▰▱▱▱▱▱▱▱ 3/10`."""
-    needed = max(needed, 1)
-    filled = min(slots, round(slots * min(current, needed) / needed))
-    return "▰" * filled + "▱" * (slots - filled) + f"  **{current}/{needed}**"
 
 
 def vote_bar(count: int, total: int, slots: int = 12) -> str:

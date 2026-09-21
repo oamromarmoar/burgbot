@@ -1,5 +1,5 @@
 """
-BurgBot — referral tracking, ticket role removal, moderation, welcome
+BurgBot — invite logging, ticket pings and role removal, moderation, welcome
 messages, reminders, polls, and more, in one Discord bot.
 
 Entrypoint only — see README.md for setup, and:
@@ -31,7 +31,7 @@ log = logging.getLogger("burgbot")
 # Gateway Intents):
 #   - members:         on_member_join/remove, member/role state, welcome messages
 #   - message_content: prefix commands in ordinary messages
-# Non-privileged intents used: guilds (baseline), invites (referral tracking).
+# Non-privileged intents used: guilds (baseline), invites (invite attribution).
 intents = discord.Intents.default()
 intents.members = True
 intents.message_content = True
