@@ -60,13 +60,7 @@ def customer_total(order: Decimal) -> Quote:
 
 
 def payment_embed(guild: discord.Guild, methods: List[dict], quote: Optional[Quote] = None) -> discord.Embed:
-    header = ""
-    if quote is not None:
-        header = (
-            f"# YOUR TOTAL IS: ${quote.total:,}\n"
-            f"Half of **${quote.order:,.2f}** is **${quote.half:,.2f}**, "
-            f"rounded to **${quote.total:,}**.\n\n"
-        )
+    header = f"# YOUR TOTAL IS: ${quote.total:,}\n\n" if quote is not None else ""
     if not methods:
         return info_embed(
             header + "No payment methods are set up yet. An admin can add one with `/setpayment`.",
