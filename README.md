@@ -13,7 +13,7 @@ and server info — every command available both as a native `/` slash command
 | **Welcome** | Configurable welcome/goodbye messages with `{mention} {name} {server} {count}` placeholders. |
 | **Moderation** | `/purge`, `/kick`, `/ban`, `/unban`, `/timeout`, `/untimeout`, `/slowmode`, persisted warnings (`/warn`, `/warnings`, `/unwarn`). Hierarchy-checked, DM'd to the target, logged. |
 | **Utility** | Interactive `/help`, `/ping`, `/botinfo`, `/serverinfo`, `/userinfo`, `/who` (look anyone up by user ID), `/avatar`, restart-safe `/remind` + `/reminders`, `/invites` stats. |
-| **Payments** | `/payment` shows the accepted payment methods and whose name each account is under; admins edit the list with `/setpayment` and `/removepayment`. |
+| **Payments** | `/payment` shows the accepted payment methods and whose name each account is under, and with an order amount quotes the customer's total (half, rounded to a dollar); admins edit the list with `/setpayment` and `/removepayment`. |
 | **Fun** | Button polls that survive restarts (`/poll`), `/roll`, `/coinflip`, `/8ball`, `/choose`. |
 | **Setup UX** | 4-step dropdown wizard (`/setup`), per-guild config with instant effect, persistent "Start Setup" button on join, `/settings` overview, activity-log channel feed. |
 
@@ -100,7 +100,8 @@ Run `/help` in Discord for the interactive, always-up-to-date version.
   `slowmode`, `warn`, `warnings`, `unwarn`
 - **Utility:** `help`, `ping`, `botinfo`, `serverinfo`, `userinfo`, `who`,
   `avatar`, `remind`, `reminders`, `invites`
-- **Payments:** `payment`, and admin-only `setpayment`, `removepayment`
+- **Payments:** `payment [amount]`, and admin-only `setpayment`,
+  `removepayment`
 - **Fun:** `poll`, `roll`, `coinflip`, `8ball`, `choose`
 - **Admin:** `setup`, `settings`, and prefix-only `!sync` (application owner;
   forces a slash-command re-sync — the tree normally syncs itself on startup
@@ -114,6 +115,13 @@ top of the server-side checks that actually enforce access.
 
 `/payment` is public and posts an embed with each method, its handle (in a
 code block, so it's tap-to-copy on mobile), and the account holder's name.
+
+Pass an order amount — `/payment 86.80` — and the embed leads with the
+customer's total as a heading: **half** the order, rounded to a whole
+dollar. Cents of **40 or more round up**, anything below rounds down, so
+`86.80` → half `43.40` → **$44**, while `86.60` → half `43.30` → **$43**.
+`$` and thousands separators are accepted; the cap is $100,000.
+
 Admins edit the list in Discord — no redeploy:
 
 - `/setpayment <method> <handle> <holder>` — adds a method, or updates it

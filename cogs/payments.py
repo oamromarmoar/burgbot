@@ -2,9 +2,13 @@
 Payment methods: a public /payment display, plus admin-only editing. Methods
 are stored per guild (config key "payment_methods"), so each server keeps its
 own list and changes take effect immediately.
+
+Given an order total, /payment also quotes the customer's share: half the
+order, rounded to a whole dollar (see customer_total).
 """
 
-from typing import TYPE_CHECKING, List
+from decimal import Decimal, InvalidOperation, ROUND_FLOOR, ROUND_HALF_UP
+from typing import TYPE_CHECKING, List, NamedTuple, Optional
 
 import discord
 from discord import app_commands
@@ -20,15 +24,56 @@ MAX_LABEL = 40
 MAX_HANDLE = 100
 MAX_HOLDER = 60
 
+MAX_ORDER_TOTAL = Decimal("100000")
+CENTS = Decimal("0.01")
+# Cents at or above this round the customer's total up to the next dollar;
+# anything below rounds down. Deliberately not banker's/half-up rounding.
+ROUND_UP_FROM = Decimal("0.40")
 
-def payment_embed(guild: discord.Guild, methods: List[dict]) -> discord.Embed:
+
+class Quote(NamedTuple):
+    order: Decimal   # what the order cost
+    half: Decimal    # exactly half of it, to the cent
+    total: int       # half rounded to whole dollars -- what the customer pays
+
+
+def parse_amount(text: str) -> Optional[Decimal]:
+    """Parse an order total like "86.80", "$86.80" or "1,234.50" into cents.
+    Returns None if it isn't a usable positive amount."""
+    cleaned = text.strip().lstrip("$").replace(",", "").replace(" ", "")
+    try:
+        amount = Decimal(cleaned)
+    except InvalidOperation:
+        return None
+    if not amount.is_finite() or amount <= 0 or amount > MAX_ORDER_TOTAL:
+        return None
+    return amount.quantize(CENTS, rounding=ROUND_HALF_UP)
+
+
+def customer_total(order: Decimal) -> Quote:
+    """Half the order, rounded to a whole dollar: 43.40 -> 44, 43.30 -> 43."""
+    half = (order / 2).quantize(CENTS, rounding=ROUND_HALF_UP)
+    dollars = half.to_integral_value(rounding=ROUND_FLOOR)
+    if half - dollars >= ROUND_UP_FROM:
+        dollars += 1
+    return Quote(order=order, half=half, total=int(dollars))
+
+
+def payment_embed(guild: discord.Guild, methods: List[dict], quote: Optional[Quote] = None) -> discord.Embed:
+    header = ""
+    if quote is not None:
+        header = (
+            f"# YOUR TOTAL IS: ${quote.total:,}\n"
+            f"Half of **${quote.order:,.2f}** is **${quote.half:,.2f}**, "
+            f"rounded to **${quote.total:,}**.\n\n"
+        )
     if not methods:
         return info_embed(
-            "No payment methods are set up yet. An admin can add one with `/setpayment`.",
+            header + "No payment methods are set up yet. An admin can add one with `/setpayment`.",
             title="💳 Payment methods",
         )
     embed = info_embed(
-        "Send to any of these, then post your confirmation in the ticket.",
+        header + "Send to any of these, then post your confirmation in the ticket.",
         title="💳 Payment methods",
     )
     for method in methods:
@@ -64,11 +109,29 @@ class Payments(commands.Cog):
         ][:25]
 
     # ------------------------------------------------------------------
-    @commands.hybrid_command(name="payment", description="Show the accepted payment methods.")
+    @commands.hybrid_command(
+        name="payment",
+        description="Show the payment methods, optionally with the customer's total for an order amount.",
+    )
+    @app_commands.describe(
+        amount="The order total, e.g. 86.80. The customer's total is half of it, rounded to a dollar."
+    )
     @commands.guild_only()
-    async def payment(self, ctx: commands.Context):
-        """Show the accepted payment methods and whose name each is under."""
-        await ctx.send(embed=payment_embed(ctx.guild, self._methods(ctx.guild.id)))
+    async def payment(self, ctx: commands.Context, amount: Optional[str] = None):
+        """Show the accepted payment methods and whose name each is under.
+        With an order amount, also quote the customer's total: half the order,
+        rounded up from 40 cents and down below that."""
+        quote = None
+        if amount is not None:
+            order = parse_amount(amount)
+            if order is None:
+                await ctx.send(embed=error_embed(
+                    f"`{amount}` isn't an amount I can use — give a number like `86.80`, "
+                    f"up to ${MAX_ORDER_TOTAL:,.0f}."
+                ), ephemeral=True)
+                return
+            quote = customer_total(order)
+        await ctx.send(embed=payment_embed(ctx.guild, self._methods(ctx.guild.id), quote))
 
     # ------------------------------------------------------------------
     @commands.hybrid_command(
