@@ -1,9 +1,10 @@
 """
-Utility commands: interactive /help, ping, bot/server/user info, avatars,
-restart-safe reminders, and invite statistics.
+Utility commands: interactive /help, ping, bot/server/user info, user
+lookup by ID, avatars, restart-safe reminders, and invite statistics.
 """
 
 import platform
+import re
 import time
 from typing import TYPE_CHECKING, List, Optional
 
@@ -26,13 +27,17 @@ if TYPE_CHECKING:
 
 MAX_REMINDER_SECONDS = 90 * 24 * 3600
 
+# A user ID, or a mention to paste straight from Discord.
+USER_REFERENCE_RE = re.compile(r"(?:<@!?(\d{15,25})>|(\d{15,25}))")
+
 # cog name -> (emoji, blurb) for /help. Cogs not listed here are hidden.
 CATEGORY_META = {
     "Invites": ("📨", "Who invited whom, for staff supervision"),
     "Tickets": ("🎫", "Ticket ping roles, opener detection, and scheduled role removals"),
     "Welcome": ("👋", "Welcome and goodbye messages"),
     "Moderation": ("🛡️", "Purge, kick, ban, timeouts, slowmode, warnings"),
-    "Utility": ("🧰", "Info commands, reminders, invites"),
+    "Utility": ("🧰", "Info commands, user lookups, reminders, invites"),
+    "Payments": ("💳", "Accepted payment methods"),
     "Fun": ("🎲", "Polls, dice, coin flips, and other party tricks"),
     "Admin": ("⚙️", "Server setup wizard and bot configuration"),
 }
@@ -199,6 +204,58 @@ class Utility(commands.Cog):
         overflow = f" … +{len(roles) - 15} more" if len(roles) > 15 else ""
         embed.add_field(name=f"Roles ({len(roles)})", value=(" ".join(shown) + overflow) if roles else "*none*", inline=False)
         embed.set_footer(text=f"User ID: {member.id}")
+        await ctx.send(embed=embed)
+
+    @commands.hybrid_command(
+        name="who", description="Look up any Discord user by ID: profile picture, username, account age."
+    )
+    @app_commands.describe(user="The user's Discord ID (or a mention).")
+    async def who(self, ctx: commands.Context, user: str):
+        """Look up a Discord user by ID — works even for people who aren't in
+        this server. Shows their profile picture, username, and account age,
+        plus their server membership and inviter when they are a member."""
+        match = USER_REFERENCE_RE.fullmatch(user.strip())
+        if match is None:
+            await ctx.send(embed=error_embed(
+                "That doesn't look like a user ID. Paste the numeric ID (enable Developer Mode → "
+                "right-click a user → Copy User ID) or a mention."
+            ), ephemeral=True)
+            return
+        user_id = int(match.group(1) or match.group(2))
+
+        target = self.bot.get_user(user_id)
+        if target is None:
+            try:
+                target = await self.bot.fetch_user(user_id)
+            except discord.NotFound:
+                await ctx.send(embed=error_embed(f"No Discord account exists with the ID `{user_id}`."),
+                               ephemeral=True)
+                return
+            except discord.HTTPException as exc:
+                await ctx.send(embed=error_embed(f"Couldn't look that ID up right now ({exc.status})."),
+                               ephemeral=True)
+                return
+
+        embed = info_embed(
+            f"{target.mention} — [open profile picture]({target.display_avatar.url})",
+            title=f"{target.display_name} ({target})",
+        )
+        embed.set_image(url=target.display_avatar.url)
+        embed.add_field(name="Username", value=f"`{target}`")
+        embed.add_field(name="User ID", value=f"`{target.id}`")
+        embed.add_field(name="Account created", value=discord.utils.format_dt(target.created_at, style="R"))
+        embed.add_field(name="Bot", value="Yes 🤖" if target.bot else "No")
+
+        member = ctx.guild.get_member(user_id) if ctx.guild else None
+        if member is not None and member.joined_at:
+            embed.add_field(name="Joined server", value=discord.utils.format_dt(member.joined_at, style="R"))
+        elif ctx.guild is not None:
+            embed.add_field(name="In this server", value="❌ No")
+        if member is not None:
+            embed.add_field(name="Top role", value=member.top_role.mention if member.top_role else "*none*")
+        inviter_id = self.bot.invited_by.get(str(user_id))
+        if inviter_id:
+            embed.add_field(name="Invited by", value=f"<@{inviter_id}>")
         await ctx.send(embed=embed)
 
     @commands.hybrid_command(name="avatar", description="Show a member's avatar, full size.")

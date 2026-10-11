@@ -12,7 +12,8 @@ and server info — every command available both as a native `/` slash command
 | **Tickets** | Pings a role 3× when a ticket opens: a per-category role (`/categoryping`, one per ticket panel, e.g. Refunds, Uber Eats, Flights) or the default (`/pingedrole`). When a **Chef** replies in a ticket, schedules removal of the free meal role from the opener (restart-safe). Inspect with `/ticket_info` and `/ticketpings`, manage with `/pending_removals` and `/cancel_removal`. |
 | **Welcome** | Configurable welcome/goodbye messages with `{mention} {name} {server} {count}` placeholders. |
 | **Moderation** | `/purge`, `/kick`, `/ban`, `/unban`, `/timeout`, `/untimeout`, `/slowmode`, persisted warnings (`/warn`, `/warnings`, `/unwarn`). Hierarchy-checked, DM'd to the target, logged. |
-| **Utility** | Interactive `/help`, `/ping`, `/botinfo`, `/serverinfo`, `/userinfo`, `/avatar`, restart-safe `/remind` + `/reminders`, `/invites` stats. |
+| **Utility** | Interactive `/help`, `/ping`, `/botinfo`, `/serverinfo`, `/userinfo`, `/who` (look anyone up by user ID), `/avatar`, restart-safe `/remind` + `/reminders`, `/invites` stats. |
+| **Payments** | `/payment` shows the accepted payment methods and whose name each account is under; admins edit the list with `/setpayment` and `/removepayment`. |
 | **Fun** | Button polls that survive restarts (`/poll`), `/roll`, `/coinflip`, `/8ball`, `/choose`. |
 | **Setup UX** | 4-step dropdown wizard (`/setup`), per-guild config with instant effect, persistent "Start Setup" button on join, `/settings` overview, activity-log channel feed. |
 
@@ -25,7 +26,7 @@ storage.py   atomic JSON persistence (data/*.json)
 ui.py        shared embeds, progress bars, duration parsing, paginator
 core.py      BurgBot class: state, gateway events, business logic, timers
 cogs/        commands + interactive UI: invites, tickets, welcome,
-             moderation, utility, fun, admin
+             moderation, utility, payments, fun, admin
 ```
 
 To drop a whole feature area, remove its line from `EXTENSIONS` in
@@ -97,8 +98,9 @@ Run `/help` in Discord for the interactive, always-up-to-date version.
 - **Welcome:** `test_welcome`
 - **Moderation:** `purge`, `kick`, `ban`, `unban`, `timeout`, `untimeout`,
   `slowmode`, `warn`, `warnings`, `unwarn`
-- **Utility:** `help`, `ping`, `botinfo`, `serverinfo`, `userinfo`, `avatar`,
-  `remind`, `reminders`, `invites`
+- **Utility:** `help`, `ping`, `botinfo`, `serverinfo`, `userinfo`, `who`,
+  `avatar`, `remind`, `reminders`, `invites`
+- **Payments:** `payment`, and admin-only `setpayment`, `removepayment`
 - **Fun:** `poll`, `roll`, `coinflip`, `8ball`, `choose`
 - **Admin:** `setup`, `settings`, and prefix-only `!sync` (application owner;
   forces a slash-command re-sync — the tree normally syncs itself on startup
@@ -107,6 +109,23 @@ Run `/help` in Discord for the interactive, always-up-to-date version.
 Staff commands set `default_member_permissions`, so Discord hides them from
 the `/` picker for members who lack the permission — a client-side hint on
 top of the server-side checks that actually enforce access.
+
+## Payment methods
+
+`/payment` is public and posts an embed with each method, its handle (in a
+code block, so it's tap-to-copy on mobile), and the account holder's name.
+Admins edit the list in Discord — no redeploy:
+
+- `/setpayment <method> <handle> <holder>` — adds a method, or updates it
+  when the method name already exists (case-insensitive; the stored
+  spelling is kept). Max 10 methods.
+- `/removepayment <method>` — removes one; the method name autocompletes.
+
+The list lives in each guild's config, seeded from
+`DEFAULT_PAYMENT_METHODS` in `config.py`, and every edit is posted to the
+activity log. Those seeds are **placeholders** (`$cashtag`, holder `Name`)
+— set the real handles and names with `/setpayment` in Discord, so real
+payment details never go into version control.
 
 ## Invite logging (summary)
 

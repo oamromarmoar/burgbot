@@ -54,6 +54,15 @@ COMMAND_PREFIX = os.environ.get("COMMAND_PREFIX", "!")
 DEFAULT_WELCOME_MESSAGE = "Welcome to **{server}**, {mention}! You are member **#{count}**. 🎉"
 DEFAULT_GOODBYE_MESSAGE = "**{name}** has left {server}. We are now **{count}** members."
 
+# Placeholders shown by /payment until an admin fills in the real handle and
+# account holder with /setpayment, which keeps real payment details out of
+# this file (and out of version control).
+DEFAULT_PAYMENT_METHODS = [
+    {"label": "Zelle", "handle": "000-000-0000", "holder": "Name"},
+    {"label": "Cash App", "handle": "$cashtag", "holder": "Name"},
+    {"label": "Venmo", "handle": "@username", "holder": "Name"},
+]
+
 DEFAULT_GUILD_CONFIG: dict = {
     "referral_role_id": REFERRAL_ROLE_ID,
     "chef_role_id": CHEF_ROLE_ID,
@@ -73,6 +82,9 @@ DEFAULT_GUILD_CONFIG: dict = {
     "welcome_message": DEFAULT_WELCOME_MESSAGE,
     "goodbye_channel_id": 0,
     "goodbye_message": DEFAULT_GOODBYE_MESSAGE,
+    # [{"label", "handle", "holder"}] -- treat as read-only; copy before
+    # modifying (this default is shared across guilds).
+    "payment_methods": DEFAULT_PAYMENT_METHODS,
 }
 
 # --- Setup wizard preset choices ------------------------------------------
@@ -92,6 +104,7 @@ EXTENSIONS = [
     "cogs.welcome",
     "cogs.moderation",
     "cogs.utility",
+    "cogs.payments",
     "cogs.fun",
     "cogs.admin",
 ]
