@@ -38,6 +38,7 @@ CATEGORY_META = {
     "Moderation": ("🛡️", "Purge, kick, ban, timeouts, slowmode, warnings"),
     "Utility": ("🧰", "Info commands, user lookups, reminders, invites"),
     "Payments": ("💳", "Accepted payment methods"),
+    "Orders": ("📦", "Per-project order tracker: ticket status, order #, store, paid, profit"),
     "Fun": ("🎲", "Polls, dice, coin flips, and other party tricks"),
     "Admin": ("⚙️", "Server setup wizard and bot configuration"),
 }

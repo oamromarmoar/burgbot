@@ -33,6 +33,7 @@ from storage import (
     TICKET_OPENERS_FILE,
     WARNINGS_FILE,
     POLLS_FILE,
+    RF_PROJECTS_FILE,
     load_json,
     save_json,
 )
@@ -75,6 +76,11 @@ class BurgBot(commands.Bot):
         #             "question", "options", "votes", "end_at", "created_at"}
         # (interactive lifecycle managed by cogs/fun.py)
         self.polls: dict[str, dict] = load_json(POLLS_FILE, {})
+
+        # guild_id (str) -> {project_key: {"name", "category_id", "created_at",
+        #                    "orders": {channel_id (str): {...}}}}
+        # (order tracking managed by cogs/orders.py)
+        self.rf_projects: dict[str, dict] = load_json(RF_PROJECTS_FILE, {})
 
     # ------------------------------------------------------------------
     # Per-guild config
@@ -143,6 +149,9 @@ class BurgBot(commands.Bot):
 
     def save_polls(self):
         save_json(POLLS_FILE, self.polls)
+
+    def save_rf_projects(self):
+        save_json(RF_PROJECTS_FILE, self.rf_projects)
 
     # ------------------------------------------------------------------
     # Startup

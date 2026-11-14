@@ -105,6 +105,7 @@ EXTENSIONS = [
     "cogs.moderation",
     "cogs.utility",
     "cogs.payments",
+    "cogs.orders",
     "cogs.fun",
     "cogs.admin",
 ]

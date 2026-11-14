@@ -23,6 +23,7 @@ SYNCED_COMMANDS_FILE = DATA_DIR / "synced_commands.json"
 WARNINGS_FILE = DATA_DIR / "warnings.json"
 REMINDERS_FILE = DATA_DIR / "reminders.json"
 POLLS_FILE = DATA_DIR / "polls.json"
+RF_PROJECTS_FILE = DATA_DIR / "rf_projects.json"
 
 
 def load_json(path: Path, default):
