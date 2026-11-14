@@ -14,7 +14,7 @@ and server info — every command available both as a native `/` slash command
 | **Moderation** | `/purge`, `/kick`, `/ban`, `/unban`, `/timeout`, `/untimeout`, `/slowmode`, persisted warnings (`/warn`, `/warnings`, `/unwarn`). Hierarchy-checked, DM'd to the target, logged. |
 | **Utility** | Interactive `/help`, `/ping`, `/botinfo`, `/serverinfo`, `/userinfo`, `/who` (look anyone up by user ID), `/avatar`, restart-safe `/remind` + `/reminders`, `/invites` stats. |
 | **Payments** | `/payment` shows the accepted payment methods and whose name each account is under, and with an order amount quotes the customer's total (half, rounded to a dollar); admins edit the list with `/setpayment` and `/removepayment`. |
-| **Orders** | Per-project order tracker, one project per ticket category (`/rfproject create`). Inside a ticket: `/opened` `/bought` `/delivered` `/pending` `/partial` `/complete` (one step at a time; only Pending → Complete may skip), `/ordernum`, `/store`, `/rfpaid`, `/prof`. `/rforders` draws the colour-coded chart with total profit. New tickets in the category are added automatically; deleted ones drop off unless Complete. Status and `/store` changes rename the ticket to e.g. `🔵BOUGHT-22-WALMART`. `/complete` deletes the ticket 12 hours later — Undo or moving the status back cancels it (needs **Manage Channels**). |
+| **Orders** | Per-project order tracker, one project per ticket category (`/rfproject create`). Inside a ticket: `/opened` `/bought` `/delivered` `/pending` `/partial` `/complete` (one step at a time; only Pending → Complete may skip), `/ordernum`, `/store`, `/rfpaid`, `/prof`. Customers can run `/status` in their ticket to see its status, store and order # (not paid/profit). `/rforders` draws the colour-coded chart with total profit. New tickets in the category are added automatically; deleted ones drop off unless Complete. Status and `/store` changes rename the ticket to e.g. `🔵BOUGHT-22-WALMART`. `/complete` deletes the ticket 12 hours later — Undo or moving the status back cancels it (needs **Manage Channels**). |
 | **Fun** | Button polls that survive restarts (`/poll`), `/roll`, `/coinflip`, `/8ball`, `/choose`. |
 | **Setup UX** | 4-step dropdown wizard (`/setup`), per-guild config with instant effect, persistent "Start Setup" button on join, `/settings` overview, activity-log channel feed. |
 
@@ -106,7 +106,7 @@ Run `/help` in Discord for the interactive, always-up-to-date version.
 - **Orders** (admin): `rfproject create|delete|list`, `rforders [project]`,
   and in a ticket `opened`, `bought`, `delivered`, `pending`, `partial`,
   `complete`, `ordernum <number>`, `store <name>`, `rfpaid <amount>`,
-  `prof <amount>`
+  `prof <amount>`; customers can use `status` in their ticket
 - **Fun:** `poll`, `roll`, `coinflip`, `8ball`, `choose`
 - **Admin:** `setup`, `settings`, and prefix-only `!sync` (application owner;
   forces a slash-command re-sync — the tree normally syncs itself on startup

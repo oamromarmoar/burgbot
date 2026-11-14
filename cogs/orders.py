@@ -814,6 +814,33 @@ class Orders(commands.Cog):
         self.bot.save_rf_projects()
         self._arm_delete(ctx.guild.id, ctx.channel.id, delete_at)
 
+    @commands.hybrid_command(name="status", description="Check the status of your order in this ticket.")
+    @commands.guild_only()
+    async def status(self, ctx: commands.Context):
+        """Anyone (customers included) can check this ticket's order status.
+        Shows the status, store and order # -- never what was paid or profit."""
+        found = await self._ticket_order(ctx)
+        if found is None:
+            return
+        project, order = found
+        self.bot.save_rf_projects()  # a brand-new row may have been created
+        current = order["status"]
+        fill, _, emoji = STATUS_STYLE[current]
+        steps = " → ".join(f"**{s}**" if s == current else s for s in STATUSES)
+        lines = [f"{emoji} Your order is **{current}**.", steps]
+        if order.get("store"):
+            lines.append(f"**Store:** {order['store']}")
+        if order.get("order_num"):
+            lines.append(f"**Order #:** {order['order_num']}")
+        if current == "Complete" and order.get("delete_at"):
+            lines.append(f"This ticket will close <t:{int(order['delete_at'])}:R>.")
+        embed = discord.Embed(
+            title=f"📦 Ticket {order['ticket']} — {project['name']}",
+            description="\n".join(lines),
+            color=discord.Color.from_rgb(*fill),
+        )
+        await self._reply(ctx, embed, seconds=60)
+
     # --- in-ticket: fields --------------------------------------------
     async def _set_field(self, ctx: commands.Context, field: str, label: str, value, shown: str):
         found = await self._ticket_order(ctx)
