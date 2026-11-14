@@ -6,6 +6,10 @@ profit. Values are filled in from inside the ticket (/ordernum, /store,
 /rfpaid, /prof, and one command per status); /rforders renders the sheet as
 a colour-coded chart image with the project's total profit at the bottom.
 
+Changing a ticket's status or store renames its channel to show both, e.g.
+"🔵BOUGHT-22-WALMART" (Discord itself lowercases text-channel names). /complete
+deletes the ticket 12 hours later; moving the status back cancels that.
+
 Statuses only move forward one step at a time — Opened → Bought →
 Delivered → Pending → Partial → Complete — except that Pending may jump
 straight to Complete. Moving backwards is always allowed, to fix mistakes.
@@ -13,6 +17,7 @@ straight to Complete. Moving backwards is always allowed, to fix mistakes.
 
 import asyncio
 import io
+import logging
 import re
 import time
 from decimal import Decimal, InvalidOperation, ROUND_HALF_UP
@@ -27,6 +32,8 @@ from ui import error_embed, info_embed, ok_embed, warn_embed
 
 if TYPE_CHECKING:
     from core import BurgBot
+
+log = logging.getLogger(__name__)
 
 STATUSES = ["Opened", "Bought", "Delivered", "Pending", "Partial", "Complete"]
 # The only forward move allowed to skip a step.
@@ -51,23 +58,38 @@ CENTS = Decimal("0.01")
 # Everything but the /rforders chart is a private reply that clears itself.
 REPLY_SECONDS = 10
 CONFIRM_SECONDS = 60
-# /complete deletes the ticket after this long, unless undone.
-COMPLETE_DELETE_SECONDS = 10
+# /complete deletes the ticket after this long, unless the status is moved back.
+COMPLETE_DELETE_SECONDS = 12 * 60 * 60
 
 ROWS_PER_PAGE = 40
 MAX_PAGES = 10  # Discord's per-message embed/attachment limit
 
 _DIGITS_RE = re.compile(r"\d+")
+# The name this cog gives tickets: "<emoji>STATUS-<number>[-STORE]".
+_RENAMED_RE = re.compile(r"^\W*[A-Za-z]+-(\d+)(?:-|$)")
 
 
 # ----------------------------------------------------------------------
 # Pure helpers
 # ----------------------------------------------------------------------
 def ticket_number(channel_name: str) -> str:
-    """The ticket's number from its channel name: "ticket-0042" -> "0042".
-    Falls back to the whole name when it has no digits."""
+    """The ticket's number from its channel name: "ticket-0042" -> "0042",
+    "🔵bought-22-7-eleven" -> "22". Falls back to the last digits in the
+    name, then to the whole name when it has no digits."""
+    match = _RENAMED_RE.match(channel_name)
+    if match:
+        return match.group(1)
     numbers = _DIGITS_RE.findall(channel_name)
     return numbers[-1] if numbers else channel_name
+
+
+def channel_name_for(order: dict) -> str:
+    """The channel name for a ticket: "🔵BOUGHT-22", plus "-WALMART" once a
+    store is set. Spaces become hyphens, as Discord would do anyway."""
+    name = f"{STATUS_STYLE[order['status']][2]}{order['status'].upper()}-{order['ticket']}"
+    if order.get("store"):
+        name += "-" + "-".join(order["store"].upper().split())
+    return name[:100]
 
 
 def _ticket_sort_key(order: dict):
@@ -290,22 +312,32 @@ class ConfirmDeleteView(discord.ui.View):
 
 class UndoCompleteView(discord.ui.View):
     """Undo button on /complete's reply, shown while the ticket waits to be
-    deleted. `undone` tells the command whether to delete or roll back."""
+    deleted. Puts the status back and cancels the deletion. (The button
+    doesn't survive a restart; moving the status back does the same.)"""
 
-    def __init__(self, author_id: int):
+    def __init__(self, cog: "Orders", author_id: int, channel: discord.TextChannel, previous: str):
         super().__init__(timeout=COMPLETE_DELETE_SECONDS)
-        self.author_id = author_id
-        self.undone = False
+        self.cog, self.author_id, self.channel, self.previous = cog, author_id, channel, previous
 
     async def interaction_check(self, interaction: discord.Interaction) -> bool:
         return interaction.user.id == self.author_id
 
     @discord.ui.button(label="Undo", style=discord.ButtonStyle.secondary)
     async def undo(self, interaction: discord.Interaction, button: discord.ui.Button):
-        self.undone = True
         self.stop()
+        order = self.cog._order_for_channel(self.channel.guild.id, self.channel.id)
+        if order is None or order["status"] != "Complete":
+            await interaction.response.edit_message(
+                embed=info_embed("Nothing to undo — this ticket isn't Complete any more."),
+                view=None, delete_after=REPLY_SECONDS,
+            )
+            return
+        order["status"] = self.previous
+        self.cog._cancel_delete(order, self.channel.id)
+        self.cog.bot.save_rf_projects()
+        self.cog._schedule_rename(self.channel)
         await interaction.response.edit_message(
-            embed=info_embed("Undone — the ticket stays open and its status is back where it was."),
+            embed=info_embed(f"Undone — the ticket stays open and is back to **{self.previous}**."),
             view=None, delete_after=REPLY_SECONDS,
         )
 
@@ -318,6 +350,101 @@ class Orders(commands.Cog):
 
     def __init__(self, bot: "BurgBot"):
         self.bot = bot
+        self._delete_tasks: dict = {}   # channel id -> pending /complete deletion
+        self._rename_tasks: dict = {}   # channel id -> running rename worker
+        self._rename_wanted: set = set()  # channel ids whose name is out of date
+
+    async def cog_load(self):
+        # Re-arm /complete deletions that were waiting when the bot stopped.
+        for guild_id, projects in self.bot.rf_projects.items():
+            for project in projects.values():
+                for channel_id, order in project["orders"].items():
+                    if order["status"] == "Complete" and order.get("delete_at"):
+                        self._arm_delete(int(guild_id), int(channel_id), order["delete_at"])
+
+    async def cog_unload(self):
+        for task in [*self._delete_tasks.values(), *self._rename_tasks.values()]:
+            task.cancel()
+
+    # --- channel renames ----------------------------------------------
+    def _schedule_rename(self, channel: discord.TextChannel):
+        """Bring the channel's name in line with its order row. Runs in the
+        background: Discord allows only 2 renames per channel per 10 minutes,
+        and discord.py waits out that limit rather than failing. Requests made
+        while a rename is in flight collapse into one more rename."""
+        self._rename_wanted.add(channel.id)
+        if channel.id not in self._rename_tasks:
+            self._rename_tasks[channel.id] = asyncio.create_task(
+                self._rename_worker(channel.guild.id, channel.id)
+            )
+
+    async def _rename_worker(self, guild_id: int, channel_id: int):
+        try:
+            while channel_id in self._rename_wanted:
+                self._rename_wanted.discard(channel_id)
+                channel = self.bot.get_channel(channel_id)
+                order = self._order_for_channel(guild_id, channel_id)
+                if channel is None or order is None:
+                    return
+                name = channel_name_for(order)
+                if channel.name.lower() == name.lower():
+                    continue
+                try:
+                    await channel.edit(name=name, reason="Order status/store changed")
+                except discord.NotFound:
+                    return
+                except (discord.Forbidden, discord.HTTPException) as exc:
+                    log.warning("Couldn't rename ticket channel %s: %s", channel_id, exc)
+                    await self.bot.send_log(
+                        channel.guild, f"⚠️ Couldn't rename {channel.mention} to `{name}` ({exc}). "
+                                       "I need **Manage Channels** in that category."
+                    )
+                    return
+        finally:
+            self._rename_tasks.pop(channel_id, None)
+            self._rename_wanted.discard(channel_id)
+
+    # --- delayed /complete deletion -----------------------------------
+    def _arm_delete(self, guild_id: int, channel_id: int, delete_at: float):
+        old = self._delete_tasks.pop(channel_id, None)
+        if old is not None:
+            old.cancel()
+        self._delete_tasks[channel_id] = asyncio.create_task(
+            self._delete_worker(guild_id, channel_id, delete_at)
+        )
+
+    def _cancel_delete(self, order: dict, channel_id: int):
+        order.pop("delete_at", None)
+        task = self._delete_tasks.pop(channel_id, None)
+        if task is not None:
+            task.cancel()
+
+    async def _delete_worker(self, guild_id: int, channel_id: int, delete_at: float):
+        try:
+            await self.bot.wait_until_ready()
+            await asyncio.sleep(max(0.0, delete_at - time.time()))
+            order = self._order_for_channel(guild_id, channel_id)
+            # Moving the status back (or Undo) clears delete_at.
+            if order is None or order["status"] != "Complete" or not order.get("delete_at"):
+                return
+            order.pop("delete_at", None)
+            self.bot.save_rf_projects()
+            channel = self.bot.get_channel(channel_id)
+            if channel is None:
+                return
+            try:
+                await channel.delete(reason="Order complete (12h after /complete)")
+            except discord.NotFound:
+                pass
+            except (discord.Forbidden, discord.HTTPException) as exc:
+                log.warning("Couldn't delete completed ticket %s: %s", channel_id, exc)
+                await self.bot.send_log(
+                    channel.guild, f"⚠️ {channel.mention} is Complete, but I couldn't delete it ({exc}). "
+                                   "I need **Manage Channels** in that category."
+                )
+        finally:
+            if self._delete_tasks.get(channel_id) is asyncio.current_task():
+                del self._delete_tasks[channel_id]
 
     async def _reply(self, ctx: commands.Context, embed: discord.Embed, *, view: Optional[discord.ui.View] = None,
                      seconds: float = REPLY_SECONDS) -> discord.Message:
@@ -334,6 +461,13 @@ class Orders(commands.Cog):
     # --- state helpers -------------------------------------------------
     def _projects(self, guild_id: int) -> dict:
         return self.bot.rf_projects.setdefault(str(guild_id), {})
+
+    def _order_for_channel(self, guild_id: int, channel_id: int) -> Optional[dict]:
+        for project in self._projects(guild_id).values():
+            order = project["orders"].get(str(channel_id))
+            if order is not None:
+                return order
+        return None
 
     def _project_for_category(self, guild_id: int, category_id: Optional[int]) -> Optional[dict]:
         if category_id is None:
@@ -423,9 +557,15 @@ class Orders(commands.Cog):
         """Drop a deleted ticket's row, unless it was Complete -- those stay
         as the record of the order (and keep counting toward total profit)."""
         changed = False
+        self._rename_wanted.discard(channel.id)
         for project in self._projects(channel.guild.id).values():
             order = project["orders"].get(str(channel.id))
-            if order is not None and order["status"] != "Complete":
+            if order is None:
+                continue
+            if order.get("delete_at"):
+                self._cancel_delete(order, channel.id)
+                changed = True
+            if order["status"] != "Complete":
                 del project["orders"][str(channel.id)]
                 changed = True
         if changed:
@@ -581,10 +721,12 @@ class Orders(commands.Cog):
     # --- in-ticket: status --------------------------------------------
     async def _set_status(
         self, ctx: commands.Context, status: str, *, note: str = "",
-        view: Optional[discord.ui.View] = None, seconds: Optional[float] = REPLY_SECONDS,
-    ) -> Optional[Tuple[dict, str]]:
-        """Move this ticket to `status`. Returns (order row, previous status)
-        on success, None after replying with why not."""
+        view=None, seconds: Optional[float] = REPLY_SECONDS,
+    ) -> Optional[Tuple[dict, str, discord.Message]]:
+        """Move this ticket to `status` and queue the channel rename. `view`,
+        if given, is called with the previous status to build the reply's
+        view. Returns (order row, previous status, reply) on success, None
+        after replying with why not."""
         found = await self._ticket_order(ctx)
         if found is None:
             return None
@@ -595,13 +737,17 @@ class Orders(commands.Cog):
             await self._reply(ctx, error_embed(problem))
             return None
         previous, order["status"] = order["status"], status
+        if previous == "Complete":
+            self._cancel_delete(order, ctx.channel.id)
+            note += "\nThe scheduled deletion is cancelled."
         self.bot.save_rf_projects()
+        self._schedule_rename(ctx.channel)
         fill, _, emoji = STATUS_STYLE[status]
-        await self._reply(ctx, discord.Embed(
+        reply = await self._reply(ctx, discord.Embed(
             description=f"{emoji} Ticket **{order['ticket']}** ({project['name']}): {previous} → **{status}**{note}",
             color=discord.Color.from_rgb(*fill),
-        ), view=view, seconds=seconds)
-        return order, previous
+        ), view=view(previous) if view else None, seconds=seconds)
+        return order, previous, reply
 
     _STATUS_HELP = "Set this ticket's order status to {}."
 
@@ -651,31 +797,22 @@ class Orders(commands.Cog):
     @commands.guild_only()
     async def complete(self, ctx: commands.Context):
         """Set this ticket's status to Complete (from Partial, or straight
-        from Pending), then delete the ticket channel after a short window to
-        undo. The row stays on the chart."""
-        view = UndoCompleteView(ctx.author.id)
+        from Pending), then delete the ticket channel 12 hours later. Undo, or
+        moving the status back (e.g. /partial), cancels the deletion. The row
+        stays on the chart."""
+        delete_at = time.time() + COMPLETE_DELETE_SECONDS
         done = await self._set_status(
-            ctx, "Complete", view=view, seconds=None,  # the channel deletion clears it
-            note=f"\nDeleting this ticket in {COMPLETE_DELETE_SECONDS}s.",
+            ctx, "Complete", seconds=None,  # the channel deletion clears it
+            view=lambda previous: UndoCompleteView(self, ctx.author.id, ctx.channel, previous),
+            note=f"\nDeleting this ticket <t:{int(delete_at)}:R>. Undo, or move the status back "
+                 "(e.g. `/partial`), to keep it.",
         )
         if done is None:
             return
-        order, previous = done
-        # A fixed wait rather than view.wait(): the deadline must hold even if
-        # the reply (and so the view's own timeout) never registered.
-        await asyncio.sleep(COMPLETE_DELETE_SECONDS)
-        view.stop()
-        if view.undone:
-            order["status"] = previous
-            self.bot.save_rf_projects()
-            return
-        try:
-            await ctx.channel.delete(reason=f"Order complete ({ctx.author})")
-        except (discord.Forbidden, discord.HTTPException) as exc:
-            await self._reply(ctx, error_embed(
-                f"Marked Complete, but I couldn't delete this ticket ({exc}). "
-                "I need **Manage Channels** in this category."
-            ))
+        order, _, _ = done
+        order["delete_at"] = delete_at
+        self.bot.save_rf_projects()
+        self._arm_delete(ctx.guild.id, ctx.channel.id, delete_at)
 
     # --- in-ticket: fields --------------------------------------------
     async def _set_field(self, ctx: commands.Context, field: str, label: str, value, shown: str):
@@ -685,6 +822,8 @@ class Orders(commands.Cog):
         project, order = found
         order[field] = value
         self.bot.save_rf_projects()
+        if field == "store":
+            self._schedule_rename(ctx.channel)
         await self._reply(ctx, ok_embed(
             f"Ticket **{order['ticket']}** ({project['name']}): {label} set to **{shown}**."
         ))
