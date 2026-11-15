@@ -5,16 +5,30 @@ referral-role removals. The detection/removal logic itself lives in
 core.py (it's event-driven).
 """
 
+import re
 from typing import TYPE_CHECKING, Optional
 
 import discord
 from discord import app_commands
 from discord.ext import commands
 
+from cogs.orders import STATUSES
 from ui import Paginator, error_embed, info_embed, ok_embed
 
 if TYPE_CHECKING:
     from core import BurgBot
+
+
+# Names /done may delete: "ticket..." or a ticket the order tracker renamed,
+# e.g. "🔵bought-22-walmart".
+_RENAMED_TICKET_RE = re.compile(
+    r"^\W*(?:" + "|".join(s.lower() for s in STATUSES) + r")-\d+(?:-|$)"
+)
+
+
+def is_done_deletable(channel_name: str) -> bool:
+    name = channel_name.lower()
+    return name.startswith("ticket") or bool(_RENAMED_TICKET_RE.match(name))
 
 
 class Tickets(commands.Cog):
@@ -37,6 +51,35 @@ class Tickets(commands.Cog):
         self.bot.ticket_openers[str(channel.id)] = str(member.id)
         self.bot.save_ticket_openers()
         await ctx.send(embed=ok_embed(f"Recorded {member.mention} as the opener of {channel.mention}."))
+
+    @commands.hybrid_command(name="done", description="Delete this ticket channel right away.")
+    @app_commands.default_permissions(administrator=True)
+    @commands.has_permissions(administrator=True)
+    @commands.guild_only()
+    async def done(self, ctx: commands.Context):
+        """Delete the ticket channel this is run in, immediately. Only works
+        in channels whose name starts with "ticket" (or a ticket the order
+        tracker has renamed, like "🔵bought-22"). Requires Administrator."""
+        channel = ctx.channel
+        if not isinstance(channel, discord.TextChannel) or not is_done_deletable(channel.name):
+            await ctx.send(
+                embed=error_embed("`/done` only works in ticket channels (names starting with `ticket`)."),
+                ephemeral=True,
+            )
+            return
+        # Answer the interaction before the channel (and the reply) disappear.
+        await ctx.send(embed=info_embed("Deleting this ticket…"), ephemeral=True)
+        try:
+            await channel.delete(reason=f"/done by {ctx.author}")
+        except discord.NotFound:
+            return
+        except (discord.Forbidden, discord.HTTPException) as exc:
+            await ctx.send(
+                embed=error_embed(f"I couldn't delete this channel ({exc}). I need **Manage Channels** here."),
+                ephemeral=True,
+            )
+            return
+        await self.bot.send_log(ctx.guild, f"🗑️ {ctx.author.mention} closed **#{channel.name}** with `/done`.")
 
     @commands.hybrid_command(
         name="pingedrole",
