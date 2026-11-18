@@ -40,6 +40,7 @@ CATEGORY_META = {
     "Payments": ("💳", "Accepted payment methods"),
     "Orders": ("📦", "Per-project order tracker: ticket status, order #, store, paid, profit"),
     "Fun": ("🎲", "Polls, dice, coin flips, and other party tricks"),
+    "Backup": ("🛟", "Verify button for member backup, and /restore into a backup server"),
     "Admin": ("⚙️", "Server setup wizard and bot configuration"),
 }
 

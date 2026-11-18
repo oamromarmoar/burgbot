@@ -25,6 +25,8 @@ REMINDERS_FILE = DATA_DIR / "reminders.json"
 POLLS_FILE = DATA_DIR / "polls.json"
 RF_PROJECTS_FILE = DATA_DIR / "rf_projects.json"
 DONE_DELETIONS_FILE = DATA_DIR / "done_deletions.json"
+# OAuth tokens of members who verified for member backup -- keep private.
+BACKUP_MEMBERS_FILE = DATA_DIR / "backup_members.json"
 
 
 def load_json(path: Path, default):

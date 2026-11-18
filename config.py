@@ -43,6 +43,19 @@ TICKET_CHANNEL_PREFIX: str = os.environ.get("TICKET_CHANNEL_PREFIX", "ticket-")
 TICKET_CATEGORY_ID: int = int(os.environ.get("TICKET_CATEGORY_ID", "0"))
 ROLE_REMOVAL_DELAY_SECONDS: int = int(os.environ.get("ROLE_REMOVAL_DELAY_SECONDS", str(20 * 60)))
 
+# --- Member backup (cogs/backup.py) ---------------------------------------
+# OAuth2 app credentials, from Developer Portal -> OAuth2. The client ID
+# defaults to the bot's own application ID.
+DISCORD_CLIENT_ID: int = int(os.environ.get("DISCORD_CLIENT_ID", "0"))
+DISCORD_CLIENT_SECRET: str = os.environ.get("DISCORD_CLIENT_SECRET", "")
+# Public https URL Discord sends members back to. On Railway, a generated
+# domain is exposed as RAILWAY_PUBLIC_DOMAIN and used automatically.
+PUBLIC_URL: str = (
+    os.environ.get("PUBLIC_URL")
+    or (f"https://{os.environ['RAILWAY_PUBLIC_DOMAIN']}" if os.environ.get("RAILWAY_PUBLIC_DOMAIN") else "")
+).rstrip("/")
+WEB_PORT: int = int(os.environ.get("PORT", "8080"))
+
 # --- Process-wide --------------------------------------------------------
 DATA_DIR = Path(os.environ.get("BOT_DATA_DIR", Path(__file__).parent / "data"))
 COMMAND_PREFIX = os.environ.get("COMMAND_PREFIX", "!")
@@ -85,6 +98,8 @@ DEFAULT_GUILD_CONFIG: dict = {
     # [{"label", "handle", "holder"}] -- treat as read-only; copy before
     # modifying (this default is shared across guilds).
     "payment_methods": DEFAULT_PAYMENT_METHODS,
+    # Role given to members who verify for member backup (0 = none).
+    "verify_role_id": 0,
 }
 
 # --- Setup wizard preset choices ------------------------------------------
@@ -107,5 +122,6 @@ EXTENSIONS = [
     "cogs.payments",
     "cogs.orders",
     "cogs.fun",
+    "cogs.backup",
     "cogs.admin",
 ]

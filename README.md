@@ -15,6 +15,7 @@ and server info — every command available both as a native `/` slash command
 | **Utility** | Interactive `/help`, `/ping`, `/botinfo`, `/serverinfo`, `/userinfo`, `/who` (look anyone up by user ID), `/avatar`, restart-safe `/remind` + `/reminders`, `/invites` stats. |
 | **Payments** | `/payment` shows the accepted payment methods and whose name each account is under, and with an order amount quotes the customer's total (half, rounded to a dollar); admins edit the list with `/setpayment` and `/removepayment`. |
 | **Orders** | Per-project order tracker, one project per ticket category (`/rfproject create`). Inside a ticket: `/opened` `/bought` `/delivered` `/pending` `/partial` `/complete` (one step at a time; only Pending → Complete may skip), `/ordernum`, `/store`, `/rfpaid`, `/prof`. Customers can run `/status` in their ticket to see its status, store and order # (not paid/profit). `/rforders` draws the colour-coded chart with total profit. New tickets in the category are added automatically; deleted ones drop off unless Complete. Status and `/store` changes rename the ticket to e.g. `🔵BOUGHT-22-WALMART`. `/complete` deletes the ticket 12 hours later — Undo or moving the status back cancels it (needs **Manage Channels**). |
+| **Backup** | Members press **Verify** (`/verifypanel`) and authorize the bot through Discord's OAuth page; if the server is ever lost, the bot owner runs `/restore` in a backup server to add everyone who verified. `/backupstats` shows how many have. See *Member backup* below. |
 | **Fun** | Button polls that survive restarts (`/poll`), `/roll`, `/coinflip`, `/8ball`, `/choose`. |
 | **Setup UX** | 4-step dropdown wizard (`/setup`), per-guild config with instant effect, persistent "Start Setup" button on join, `/settings` overview, activity-log channel feed. |
 
@@ -108,6 +109,7 @@ Run `/help` in Discord for the interactive, always-up-to-date version.
   `complete`, `ordernum <number>`, `store <name>`, `rfpaid <amount>`,
   `prof <amount>`; customers can use `status` in their ticket
 - **Tickets** (admin): `done` deletes the ticket channel it's run in 1 hour later (names starting with `ticket`, or bot-renamed tickets); `canceldone` or the Cancel button keeps it
+- **Backup** (admin): `verifypanel [role]`, `backupstats`, and owner-only `restore`
 - **Fun:** `poll`, `roll`, `coinflip`, `8ball`, `choose`
 - **Admin:** `setup`, `settings`, and prefix-only `!sync` (application owner;
   forces a slash-command re-sync — the tree normally syncs itself on startup
@@ -194,3 +196,27 @@ genuinely first-ever boot, it's expected and can be ignored.
   for the ticket bot exposing opener data directly, if yours can.
 - Failed Discord API calls (role edits, invite fetches) are logged and
   skipped, not retried.
+
+## Member backup
+
+Members who press **Verify** authorize the bot (Discord OAuth2, scopes
+`identify guilds.join`). Their tokens are saved in `backup_members.json` in
+the data directory, so keep that private and on a persistent volume. If the
+server is lost, add the bot to the backup server and run `/restore` there as
+the bot owner. Only members who verified can be added. Anyone who leaves the
+server, or revokes the app under *User Settings → Authorized Apps*, is
+dropped.
+
+Setup (Railway):
+
+1. Developer Portal → your app → **OAuth2**: copy the **Client Secret**.
+2. Railway → service → **Settings → Networking → Generate Domain**. The bot
+   picks it up from `RAILWAY_PUBLIC_DOMAIN` and listens on `PORT`.
+3. Railway → **Variables**: set `DISCORD_CLIENT_SECRET` (and `PUBLIC_URL` if
+   you use a custom domain).
+4. Developer Portal → **OAuth2 → Redirects**: add `https://<your domain>/callback`.
+5. Redeploy, then run `/verifypanel` in the channel where members should verify.
+
+Restore isn't automatic: the bot can't reliably tell a deleted server from
+an outage or being kicked. It DMs the owner when it loses a server that had
+verified members.
