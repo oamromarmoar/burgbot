@@ -107,7 +107,7 @@ Run `/help` in Discord for the interactive, always-up-to-date version.
   and in a ticket `opened`, `bought`, `delivered`, `pending`, `partial`,
   `complete`, `ordernum <number>`, `store <name>`, `rfpaid <amount>`,
   `prof <amount>`; customers can use `status` in their ticket
-- **Tickets** (admin): `done` deletes the ticket channel it's run in (names starting with `ticket`, or bot-renamed tickets)
+- **Tickets** (admin): `done` deletes the ticket channel it's run in 1 hour later (names starting with `ticket`, or bot-renamed tickets); `canceldone` or the Cancel button keeps it
 - **Fun:** `poll`, `roll`, `coinflip`, `8ball`, `choose`
 - **Admin:** `setup`, `settings`, and prefix-only `!sync` (application owner;
   forces a slash-command re-sync — the tree normally syncs itself on startup

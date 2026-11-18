@@ -24,6 +24,7 @@ WARNINGS_FILE = DATA_DIR / "warnings.json"
 REMINDERS_FILE = DATA_DIR / "reminders.json"
 POLLS_FILE = DATA_DIR / "polls.json"
 RF_PROJECTS_FILE = DATA_DIR / "rf_projects.json"
+DONE_DELETIONS_FILE = DATA_DIR / "done_deletions.json"
 
 
 def load_json(path: Path, default):

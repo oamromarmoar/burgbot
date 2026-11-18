@@ -5,7 +5,10 @@ referral-role removals. The detection/removal logic itself lives in
 core.py (it's event-driven).
 """
 
+import asyncio
+import logging
 import re
+import time
 from typing import TYPE_CHECKING, Optional
 
 import discord
@@ -13,10 +16,16 @@ from discord import app_commands
 from discord.ext import commands
 
 from cogs.orders import STATUSES
+from storage import DONE_DELETIONS_FILE, load_json, save_json
 from ui import Paginator, error_embed, info_embed, ok_embed
 
 if TYPE_CHECKING:
     from core import BurgBot
+
+log = logging.getLogger(__name__)
+
+# /done deletes the ticket this long after it's run.
+DONE_DELETE_SECONDS = 60 * 60
 
 
 # Names /done may delete: "ticket..." or a ticket the order tracker renamed,
@@ -31,11 +40,99 @@ def is_done_deletable(channel_name: str) -> bool:
     return name.startswith("ticket") or bool(_RENAMED_TICKET_RE.match(name))
 
 
+class CancelDoneView(discord.ui.View):
+    """Cancel button on /done's message. Doesn't survive a restart;
+    /canceldone does the same thing."""
+
+    def __init__(self, cog: "Tickets", channel_id: int):
+        super().__init__(timeout=DONE_DELETE_SECONDS)
+        self.cog, self.channel_id = cog, channel_id
+
+    async def interaction_check(self, interaction: discord.Interaction) -> bool:
+        if interaction.user.guild_permissions.administrator:
+            return True
+        await interaction.response.send_message("Only admins can cancel this.", ephemeral=True)
+        return False
+
+    @discord.ui.button(label="Cancel deletion", style=discord.ButtonStyle.secondary)
+    async def cancel(self, interaction: discord.Interaction, button: discord.ui.Button):
+        self.stop()
+        cancelled = self.cog._cancel_done(self.channel_id)
+        await interaction.response.edit_message(
+            embed=info_embed(
+                f"{interaction.user.mention} cancelled the deletion — this ticket stays open."
+                if cancelled else "This ticket isn't scheduled for deletion any more."
+            ),
+            view=None,
+        )
+
+
 class Tickets(commands.Cog):
     """Ticket-channel tools and scheduled role-removal management."""
 
     def __init__(self, bot: "BurgBot"):
         self.bot = bot
+        # channel id (str) -> {"guild_id", "delete_at", "by"}; saved so a
+        # restart doesn't lose pending /done deletions.
+        self.done_deletions: dict = load_json(DONE_DELETIONS_FILE, {})
+        self._done_tasks: dict = {}
+
+    async def cog_load(self):
+        for channel_id, entry in self.done_deletions.items():
+            self._arm_done(int(channel_id), entry)
+
+    async def cog_unload(self):
+        for task in self._done_tasks.values():
+            task.cancel()
+
+    # --- delayed /done deletion ---------------------------------------
+    def _save_done(self):
+        save_json(DONE_DELETIONS_FILE, self.done_deletions)
+
+    def _arm_done(self, channel_id: int, entry: dict):
+        self._done_tasks[channel_id] = asyncio.create_task(self._done_worker(channel_id, entry))
+
+    def _cancel_done(self, channel_id: int) -> bool:
+        task = self._done_tasks.pop(channel_id, None)
+        if task is not None:
+            task.cancel()
+        if self.done_deletions.pop(str(channel_id), None) is None:
+            return False
+        self._save_done()
+        return True
+
+    async def _done_worker(self, channel_id: int, entry: dict):
+        try:
+            await self.bot.wait_until_ready()
+            await asyncio.sleep(max(0.0, entry["delete_at"] - time.time()))
+            if self.done_deletions.pop(str(channel_id), None) is None:
+                return
+            self._save_done()
+            channel = self.bot.get_channel(channel_id)
+            if channel is None:
+                return
+            try:
+                await channel.delete(reason=f"/done by user {entry['by']} (1h delay)")
+            except discord.NotFound:
+                return
+            except (discord.Forbidden, discord.HTTPException) as exc:
+                log.warning("Couldn't delete /done ticket %s: %s", channel_id, exc)
+                await self.bot.send_log(
+                    channel.guild, f"⚠️ Couldn't delete {channel.mention} after `/done` ({exc}). "
+                                   "I need **Manage Channels** there."
+                )
+                return
+            await self.bot.send_log(
+                channel.guild, f"🗑️ Deleted **#{channel.name}** (closed with `/done` by <@{entry['by']}>)."
+            )
+        finally:
+            if self._done_tasks.get(channel_id) is asyncio.current_task():
+                del self._done_tasks[channel_id]
+
+    @commands.Cog.listener()
+    async def on_guild_channel_delete(self, channel: discord.abc.GuildChannel):
+        if str(channel.id) in self.done_deletions:
+            self._cancel_done(channel.id)
 
     @commands.hybrid_command(
         name="set_ticket_opener",
@@ -52,14 +149,15 @@ class Tickets(commands.Cog):
         self.bot.save_ticket_openers()
         await ctx.send(embed=ok_embed(f"Recorded {member.mention} as the opener of {channel.mention}."))
 
-    @commands.hybrid_command(name="done", description="Delete this ticket channel right away.")
+    @commands.hybrid_command(name="done", description="Delete this ticket channel in 1 hour.")
     @app_commands.default_permissions(administrator=True)
     @commands.has_permissions(administrator=True)
     @commands.guild_only()
     async def done(self, ctx: commands.Context):
-        """Delete the ticket channel this is run in, immediately. Only works
-        in channels whose name starts with "ticket" (or a ticket the order
-        tracker has renamed, like "🔵bought-22"). Requires Administrator."""
+        """Schedule the ticket channel this is run in for deletion 1 hour
+        from now. Only works in channels whose name starts with "ticket" (or
+        a ticket the order tracker has renamed, like "🔵bought-22").
+        Cancel with the button or /canceldone. Requires Administrator."""
         channel = ctx.channel
         if not isinstance(channel, discord.TextChannel) or not is_done_deletable(channel.name):
             await ctx.send(
@@ -67,19 +165,38 @@ class Tickets(commands.Cog):
                 ephemeral=True,
             )
             return
-        # Answer the interaction before the channel (and the reply) disappear.
-        await ctx.send(embed=info_embed("Deleting this ticket…"), ephemeral=True)
-        try:
-            await channel.delete(reason=f"/done by {ctx.author}")
-        except discord.NotFound:
+        existing = self.done_deletions.get(str(channel.id))
+        if existing:
+            await ctx.send(embed=info_embed(
+                f"This ticket is already set to be deleted <t:{int(existing['delete_at'])}:R>. "
+                "Use `/canceldone` to keep it."
+            ), ephemeral=True)
             return
-        except (discord.Forbidden, discord.HTTPException) as exc:
-            await ctx.send(
-                embed=error_embed(f"I couldn't delete this channel ({exc}). I need **Manage Channels** here."),
-                ephemeral=True,
-            )
+
+        entry = {"guild_id": ctx.guild.id, "delete_at": time.time() + DONE_DELETE_SECONDS, "by": ctx.author.id}
+        self.done_deletions[str(channel.id)] = entry
+        self._save_done()
+        self._arm_done(channel.id, entry)
+        # Public, so the customer sees the ticket is closing.
+        await ctx.send(
+            embed=info_embed(f"✅ This ticket will be deleted <t:{int(entry['delete_at'])}:R>."),
+            view=CancelDoneView(self, channel.id),
+        )
+        await self.bot.send_log(
+            ctx.guild, f"🗑️ {ctx.author.mention} scheduled {channel.mention} for deletion in 1 hour (`/done`)."
+        )
+
+    @commands.hybrid_command(name="canceldone", description="Cancel a pending /done deletion of this ticket.")
+    @app_commands.default_permissions(administrator=True)
+    @commands.has_permissions(administrator=True)
+    @commands.guild_only()
+    async def canceldone(self, ctx: commands.Context):
+        """Keep this ticket: cancels the deletion /done scheduled."""
+        if not self._cancel_done(ctx.channel.id):
+            await ctx.send(embed=error_embed("This ticket isn't scheduled for deletion."), ephemeral=True)
             return
-        await self.bot.send_log(ctx.guild, f"🗑️ {ctx.author.mention} closed **#{channel.name}** with `/done`.")
+        await ctx.send(embed=ok_embed(f"{ctx.author.mention} cancelled the deletion — this ticket stays open."))
+        await self.bot.send_log(ctx.guild, f"↩️ {ctx.author.mention} cancelled `/done` for {ctx.channel.mention}.")
 
     @commands.hybrid_command(
         name="pingedrole",
